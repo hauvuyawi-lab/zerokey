@@ -69,6 +69,8 @@ export interface ChatCompletionRequest {
     stream?: boolean;
     temperature?: number;
     max_tokens?: number;
+    auto_continue?: boolean;
+    max_continuations?: number;
 }
 
 export interface ChatCompletionChoice {

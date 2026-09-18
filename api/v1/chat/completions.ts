@@ -11,6 +11,11 @@ import type {
     ChatCompletionChunk
 } from '../../../lib/providers/types';
 import { setCorsHeaders, resolveHttpStatus } from '../../../lib/http';
+import {
+    isTruncated,
+    deduplicateSeam,
+    buildContinuationMessages
+} from '../../../lib/continuation';
 
 /**
  * OpenAI-compatible /v1/chat/completions endpoint
@@ -46,7 +51,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
         return;
     }
 
-    const { model, messages, stream = false } = body || {};
+    const {
+        model,
+        messages,
+        stream = false,
+        auto_continue = true,
+        max_continuations = 1
+    } = body || {};
 
     if (!Array.isArray(messages) || messages.length === 0) {
         res.status(400).json({
@@ -77,6 +88,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
     const activeModel = targetModel || model || 'unified-model';
     const id = `chatcmpl-${crypto.randomBytes(12).toString('hex')}`;
     const created = Math.floor(Date.now() / 1000);
+    const executionStartTime = Date.now();
+    const MAX_TIME_BUDGET_MS = 10500;
+    const allowedContinuations = Math.min(Math.max(0, max_continuations), 2);
 
     try {
         if (stream) {
@@ -104,31 +118,83 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
             };
             res.write(`data: ${JSON.stringify(initialChunk)}\n\n`);
 
-            // Stream incremental token deltas
-            await unifiedExecute({
-                model,
-                prompt,
-                messages,
-                onChunk: (token: string) => {
-                    const chunk: ChatCompletionChunk = {
-                        id,
-                        object: 'chat.completion.chunk',
-                        created,
-                        model: activeModel,
-                        choices: [
-                            {
-                                index: 0,
-                                delta: { content: token },
-                                finish_reason: null
-                            }
-                        ]
-                    };
-                    res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-                    if (typeof (res as any).flush === 'function') {
-                        (res as any).flush();
-                    }
+            let accumulatedText = '';
+            let currentMessages = messages;
+            let currentPrompt = prompt;
+            let pass = 0;
+
+            const emitDelta = (content: string) => {
+                const chunk: ChatCompletionChunk = {
+                    id,
+                    object: 'chat.completion.chunk',
+                    created,
+                    model: activeModel,
+                    choices: [
+                        {
+                            index: 0,
+                            delta: { content },
+                            finish_reason: null
+                        }
+                    ]
+                };
+                res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+                if (typeof (res as any).flush === 'function') {
+                    (res as any).flush();
                 }
-            });
+            };
+
+            while (pass <= allowedContinuations) {
+                let passBuffer = '';
+                let passIsCheckingSeam = pass > 0;
+
+                await unifiedExecute({
+                    model,
+                    prompt: currentPrompt,
+                    messages: currentMessages,
+                    onChunk: (token: string) => {
+                        if (pass === 0) {
+                            accumulatedText += token;
+                            emitDelta(token);
+                        } else {
+                            if (passIsCheckingSeam) {
+                                passBuffer += token;
+                                if (passBuffer.length >= 30 || token.includes('\n')) {
+                                    const deduped = deduplicateSeam(accumulatedText, passBuffer);
+                                    accumulatedText += deduped;
+                                    if (deduped) emitDelta(deduped);
+                                    passIsCheckingSeam = false;
+                                    passBuffer = '';
+                                }
+                            } else {
+                                accumulatedText += token;
+                                emitDelta(token);
+                            }
+                        }
+                    }
+                });
+
+                if (passIsCheckingSeam && passBuffer) {
+                    const deduped = deduplicateSeam(accumulatedText, passBuffer);
+                    accumulatedText += deduped;
+                    if (deduped) emitDelta(deduped);
+                    passIsCheckingSeam = false;
+                }
+
+                pass++;
+
+                const timeElapsed = Date.now() - executionStartTime;
+                if (
+                    !auto_continue ||
+                    pass > allowedContinuations ||
+                    timeElapsed > MAX_TIME_BUDGET_MS ||
+                    !isTruncated(accumulatedText)
+                ) {
+                    break;
+                }
+
+                currentMessages = buildContinuationMessages(messages, accumulatedText);
+                currentPrompt = normalizeMessages(currentMessages);
+            }
 
             // Final stop chunk
             const finalChunk: ChatCompletionChunk = {
@@ -150,28 +216,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
             return;
         }
 
-        // Non-streaming completion
-        const result = await unifiedExecute({ model, prompt, messages });
+        // Non-streaming completion with auto-continuation
+        let accumulatedText = '';
+        let currentMessages = messages;
+        let currentPrompt = prompt;
+        let pass = 0;
+        let activeResultModel = activeModel;
+
+        while (pass <= allowedContinuations) {
+            const result = await unifiedExecute({
+                model,
+                prompt: currentPrompt,
+                messages: currentMessages
+            });
+            activeResultModel = result.model || activeResultModel;
+
+            if (pass === 0) {
+                accumulatedText = result.response;
+            } else {
+                const cleanChunk = deduplicateSeam(accumulatedText, result.response);
+                accumulatedText += cleanChunk;
+            }
+
+            pass++;
+
+            const timeElapsed = Date.now() - executionStartTime;
+            if (
+                !auto_continue ||
+                pass > allowedContinuations ||
+                timeElapsed > MAX_TIME_BUDGET_MS ||
+                !isTruncated(accumulatedText)
+            ) {
+                break;
+            }
+
+            currentMessages = buildContinuationMessages(messages, accumulatedText);
+            currentPrompt = normalizeMessages(currentMessages);
+        }
 
         const responsePayload: ChatCompletionResponse = {
             id,
             object: 'chat.completion',
             created,
-            model: result.model || activeModel,
+            model: activeResultModel,
             choices: [
                 {
                     index: 0,
                     message: {
                         role: 'assistant',
-                        content: result.response
+                        content: accumulatedText
                     },
                     finish_reason: 'stop'
                 }
             ],
             usage: {
                 prompt_tokens: Math.ceil(prompt.length / 4),
-                completion_tokens: Math.ceil(result.response.length / 4),
-                total_tokens: Math.ceil((prompt.length + result.response.length) / 4)
+                completion_tokens: Math.ceil(accumulatedText.length / 4),
+                total_tokens: Math.ceil((prompt.length + accumulatedText.length) / 4)
             }
         };
 
