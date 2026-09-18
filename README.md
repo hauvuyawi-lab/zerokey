@@ -61,6 +61,52 @@ flowchart TD
 
 ---
 
+## Auto-Continuation Mechanism (Bypassing Length & Timeouts)
+
+When generating long responses or code listings, public web backends cut off outputs around 2,500 tokens, leaving unclosed code fences or broken syntax. Furthermore, serverless platforms like Vercel enforce a 15-second execution limit.
+
+`zerokey` solves both problems via an **Auto-Continuation Sequence**:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Client as Client / IDE / WebUI
+    participant Gateway as zerokey Gateway
+    participant Upstream as Upstream LLM (DeepAI / Gemini)
+
+    Client->>Gateway: POST /v1/chat/completions (stream: true)
+    Gateway->>Upstream: Pass 1: Initial Prompt
+    Upstream-->>Gateway: Streams token deltas (TTFT ~300ms–500ms)
+    Gateway-->>Client: Pipes tokens immediately via SSE...
+    Note over Upstream: Upstream hits generation cutoff (~2.5k tokens)<br/>Incomplete code block / mid-sentence!
+    Upstream-->>Gateway: Pass 1 connection closes
+
+    rect rgb(235, 245, 255)
+        Note over Gateway: [Auto-Continuation Interceptor]<br/>1. isTruncated() = TRUE (Unclosed fence / operator)<br/>2. Time elapsed < 10.5s (Safe Vercel budget)<br/>3. HOLDS TCP SOCKET OPEN (Suppresses [DONE])
+        Gateway->>Upstream: Pass 2: "Continue in same language without repeating"
+        Upstream-->>Gateway: Streams Pass 2 tokens
+        Note over Gateway: deduplicateSeam()<br/>Slices off overlapping words & preambles
+        Gateway-->>Client: Streams Pass 2 tokens down EXACT SAME connection!
+    end
+
+    Note over Upstream: Full code listing finished & closed cleanly
+    Gateway-->>Client: data: {"finish_reason": "stop"}
+    Gateway-->>Client: data: [DONE]
+    Note over Client: Receives complete, unbroken code without user clicking "continue"!
+```
+
+### The 4-Step Bypass Algorithm:
+
+1. **Sub-Second TTFB (Beating Vercel 15s Cutoff)**: Because streaming headers and initial tokens flush within **~300ms–500ms**, Vercel keeps the TCP socket open for **20+ seconds**, permitting over 2,200+ tokens to stream continuously without timing out.
+2. **Universal Truncation Detection**: The `isTruncated()` analyzer inspects token syntax:
+   * **Odd markdown backtick counts** (e.g. 3 backticks without closing 3 backticks).
+   * **Trailing code operators & keywords** (`+`, `-`, `=`, `&&`, `function`, `return`, `const`).
+   * **Missing multilingual punctuation** across Latin, CJK (`。`, `！`), and Arabic scripts (`؟`).
+3. **Socket Hold-Open**: When Pass 1 concludes, the gateway intercepts the stream completion and **suppresses the standard `data: [DONE]` signal**, holding the client connection alive.
+4. **Seam Deduplication & Preamble Stripping**: If the model restarts with conversational filler (*"Sure, continuing:"*) or repeats the last 1–2 words at the boundary, `deduplicateSeam()` slices off the duplicate prefix, producing an invisible transition.
+
+---
+
 ## Head-to-Head Comparison: `zerokey` vs. Official Paid APIs
 
 | Feature / Metric | 🔑 zerokey (This Gateway) | 🏢 Official Paid APIs (OpenAI / Google / Anthropic) |
