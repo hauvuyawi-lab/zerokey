@@ -42,7 +42,7 @@ describe('Proxy Pool Manager (src/lib/proxy.ts)', () => {
             };
             const selected = selectProxy(env);
             expect(selected).toBeTruthy();
-            expect(['https://proxy-a.vercel.app', 'https://proxy-b.vercel.app']).toContain(selected!);
+            expect(['https://proxy-a.vercel.app/proxy', 'https://proxy-b.vercel.app/proxy']).toContain(selected!);
         });
     });
 
@@ -63,6 +63,6 @@ describe('Proxy Pool Manager (src/lib/proxy.ts)', () => {
             expect(res.status).toBe(200);
             const data = (await res.json()) as any;
             expect(data.url).toBe('https://httpbin.org/get');
-        });
+        }, 15000);
     });
 });

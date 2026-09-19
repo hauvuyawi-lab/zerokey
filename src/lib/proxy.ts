@@ -11,6 +11,7 @@ export interface ProxyEndpoint {
 /**
  * Extracts and validates configured proxy URLs from environment bindings.
  * Supports comma-separated URLs in env.PROXY_URLS or process.env.PROXY_URLS.
+ * Automatically appends /proxy if the user supplied the root domain (e.g. https://xyz.vercel.app).
  */
 export function getProxyEndpoints(env?: any): string[] {
     const raw = env?.PROXY_URLS || (typeof process !== 'undefined' ? process.env?.PROXY_URLS : undefined);
@@ -20,7 +21,15 @@ export function getProxyEndpoints(env?: any): string[] {
 
     return raw
         .split(',')
-        .map(u => u.trim())
+        .map(u => {
+            let clean = u.trim().replace(/\/+$/, '');
+            if (!clean) return '';
+            // Auto-append /proxy if only base domain was provided
+            if (!clean.endsWith('/proxy')) {
+                clean += '/proxy';
+            }
+            return clean;
+        })
         .filter(u => u.length > 0 && /^https?:\/\//i.test(u));
 }
 
