@@ -1,6 +1,7 @@
 /**
  * src/index.ts - Zerokey Cloudflare Worker Entry Point.
  * High-performance, edge-native, multi-model AI gateway with Web Standards.
+ * Providers: Google Gemini -> DuckAI -> DeepAI.
  */
 
 import {
@@ -18,6 +19,7 @@ import {
     getUnifiedOpenAIModels
 } from './lib/providers/router';
 import { askGemini, getGeminiModels } from './lib/providers/gemini';
+import { askDuckAi, fetchDuckAiModels } from './lib/providers/duckai';
 import { askDeepAi, fetchDeepAiModels } from './lib/providers/deepai';
 import { isTruncated, deduplicateSeam, buildContinuationMessages } from './lib/continuation';
 import type {
@@ -28,6 +30,9 @@ import type {
 
 export interface Env {
     ENVIRONMENT?: string;
+    ADMIN_KEY?: string;
+    DUCKAI_VQD?: string;
+    ZEROKEY_KV?: KVNamespace;
     [key: string]: any;
 }
 
@@ -54,6 +59,7 @@ export default {
                         models: '/v1/models',
                         completions: '/v1/chat/completions',
                         gemini: '/gemini',
+                        duckai: '/duckai',
                         deepai: '/deepai'
                     }
                 });
@@ -75,15 +81,25 @@ export default {
                 if (method !== 'POST') {
                     return jsonError(405, `Method ${method} not allowed. Use POST.`, 'method_not_allowed');
                 }
-                return handleChatCompletions(request, url);
+                return handleChatCompletions(request, url, env);
             }
 
-            // 5. /gemini
+            // 5. /duckai/token (Autonomous VQD token ingestion & status check)
+            if (path === '/duckai/token') {
+                return handleDuckAiTokenEndpoint(request, env);
+            }
+
+            // 6. /gemini
             if (path === '/gemini') {
                 return handleGeminiEndpoint(request);
             }
 
-            // 6. /deepai
+            // 7. /duckai
+            if (path === '/duckai') {
+                return handleDuckAiEndpoint(request, env);
+            }
+
+            // 8. /deepai
             if (path === '/deepai') {
                 return handleDeepAiEndpoint(request);
             }
@@ -100,7 +116,7 @@ export default {
 /**
  * Handles OpenAI-compatible /v1/chat/completions requests.
  */
-async function handleChatCompletions(request: Request, url: URL): Promise<Response> {
+async function handleChatCompletions(request: Request, url: URL, env?: Env): Promise<Response> {
     let body: ChatCompletionRequest;
     try {
         body = await request.json();
@@ -123,7 +139,7 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
     const acParam = url.searchParams.get('ac') || url.searchParams.get('auto_continue');
     const autoContinue = acParam === '1' || acParam === 'true';
 
-    const { targetModel } = resolveProvider(model);
+    const { targetModel } = await resolveProvider(model);
     const activeModel = targetModel || model || 'unified-model';
     const id = `chatcmpl-${crypto.randomUUID().replaceAll('-', '').slice(0, 24)}`;
     const created = Math.floor(Date.now() / 1000);
@@ -132,7 +148,6 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
     if (stream) {
         const sse = createSseStream();
 
-        // Run streaming in background context of the response
         (async () => {
             try {
                 let accumulatedText = '';
@@ -163,7 +178,8 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
                     onChunk: (token: string) => {
                         accumulatedText += token;
                         emitDelta(token);
-                    }
+                    },
+                    env
                 });
 
                 if (!accumulatedText && initialResult.response) {
@@ -188,7 +204,8 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
                             messages: continuationMessages,
                             onChunk: (token: string) => {
                                 nextPassText += token;
-                            }
+                            },
+                            env
                         });
 
                         if (!nextPassText.trim()) break;
@@ -232,7 +249,7 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
     }
 
     // --- Instant Mode (Non-Streaming) ---
-    const initialResult = await unifiedExecute({ model, prompt, messages });
+    const initialResult = await unifiedExecute({ model, prompt, messages, env });
     let fullText = initialResult.response || '';
 
     // If auto-continuation is opted-in (?ac=1), continue truncated responses
@@ -248,7 +265,8 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
             const nextPass = await unifiedExecute({
                 model,
                 prompt: continuationPrompt,
-                messages: continuationMessages
+                messages: continuationMessages,
+                env
             });
 
             if (!nextPass.response?.trim()) break;
@@ -288,6 +306,74 @@ async function handleChatCompletions(request: Request, url: URL): Promise<Respon
 }
 
 /**
+ * Handles autonomous DuckAI VQD token ingestion and verification.
+ * Guarded by ADMIN_KEY secret.
+ */
+async function handleDuckAiTokenEndpoint(request: Request, env?: Env): Promise<Response> {
+    const method = request.method.toUpperCase();
+
+    // Authenticate with Bearer token
+    const authHeader = request.headers.get('authorization') || '';
+    const bearerToken = authHeader.replace(/^Bearer\s+/i, '').trim();
+    const adminKey = env?.ADMIN_KEY || (typeof process !== 'undefined' ? process.env?.ADMIN_KEY : undefined);
+
+    if (!adminKey || bearerToken !== adminKey) {
+        return jsonError(401, 'Unauthorized: Invalid or missing ADMIN_KEY', 'unauthorized');
+    }
+
+    if (method === 'POST') {
+        let body: any;
+        try {
+            body = await request.json();
+        } catch {
+            return jsonError(400, 'Invalid JSON body', 'invalid_json');
+        }
+
+        const vqd = typeof body?.vqd === 'string' ? body.vqd.trim() : '';
+        if (!vqd) {
+            return jsonError(400, 'Missing "vqd" string in request body', 'missing_vqd');
+        }
+
+        let storedInKv = false;
+        if (env?.ZEROKEY_KV) {
+            await env.ZEROKEY_KV.put('DUCKAI_VQD', vqd);
+            storedInKv = true;
+        }
+
+        return jsonResponse({
+            success: true,
+            message: 'DuckAI VQD token updated successfully',
+            tokenLength: vqd.length,
+            storedInKv,
+            updatedAt: new Date().toISOString()
+        });
+    }
+
+    if (method === 'GET') {
+        let currentToken = '';
+        let storedInKv = false;
+
+        if (env?.ZEROKEY_KV) {
+            try {
+                currentToken = (await env.ZEROKEY_KV.get('DUCKAI_VQD')) || '';
+                storedInKv = true;
+            } catch {}
+        }
+        if (!currentToken && env?.DUCKAI_VQD) {
+            currentToken = env.DUCKAI_VQD;
+        }
+
+        return jsonResponse({
+            hasToken: !!currentToken,
+            tokenLength: currentToken.length,
+            storedInKv
+        });
+    }
+
+    return jsonError(405, `Method ${method} not allowed`, 'method_not_allowed');
+}
+
+/**
  * Handles standalone /gemini endpoint.
  */
 async function handleGeminiEndpoint(request: Request): Promise<Response> {
@@ -307,6 +393,29 @@ async function handleGeminiEndpoint(request: Request): Promise<Response> {
     }
 
     const result = await askGemini(prompt);
+    return jsonResponse(result);
+}
+
+/**
+ * Handles standalone /duckai endpoint.
+ */
+async function handleDuckAiEndpoint(request: Request, env?: Env): Promise<Response> {
+    const parseResult = await parseAndValidateRequest(request);
+    if (parseResult.error) {
+        return jsonError(parseResult.error.status, parseResult.error.error);
+    }
+
+    if (parseResult.isModelQuery) {
+        const models = (await fetchDuckAiModels()).models;
+        return jsonResponse({ provider: 'duckai', models });
+    }
+
+    const { prompt, model, stream } = parseResult.data!;
+    if (stream) {
+        return streamSinglePrompt(prompt, (p, onChunk) => askDuckAi(p, { model, onChunk }, env));
+    }
+
+    const result = await askDuckAi(prompt, { model }, env);
     return jsonResponse(result);
 }
 

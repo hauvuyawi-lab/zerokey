@@ -155,4 +155,109 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
         expect(res.status).toBe(200);
         expect(data?.choices?.[0]?.message?.content).toBeTruthy();
     }, 15000);
+
+    describe('DuckAI Standalone & Autonomous Token Ingestion Endpoints', () => {
+        it('GET /duckai returns DuckAI models catalog', async () => {
+            const req = new Request('http://localhost/duckai', { method: 'GET' });
+            const res = await worker.fetch(req);
+            const data = await res.json() as any;
+
+            expect(res.status).toBe(200);
+            expect(data?.provider).toBe('duckai');
+            expect(Array.isArray(data?.models)).toBe(true);
+            expect(data.models.length).toBeGreaterThan(0);
+        });
+
+        it('/duckai/token rejects unauthorized requests without ADMIN_KEY', async () => {
+            const req = new Request('http://localhost/duckai/token', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ vqd: 'sample-token' })
+            });
+            const res = await worker.fetch(req, { ADMIN_KEY: 'secret123' });
+            const data = await res.json() as any;
+
+            expect(res.status).toBe(401);
+            expect(data?.error?.code).toBe('unauthorized');
+        });
+
+        it('/duckai/token rejects invalid Bearer token', async () => {
+            const req = new Request('http://localhost/duckai/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer wrong-key'
+                },
+                body: JSON.stringify({ vqd: 'sample-token' })
+            });
+            const res = await worker.fetch(req, { ADMIN_KEY: 'secret123' });
+            const data = await res.json() as any;
+
+            expect(res.status).toBe(401);
+            expect(data?.error?.code).toBe('unauthorized');
+        });
+
+        it('/duckai/token stores fresh token in KV when authorized', async () => {
+            const mockKvStore: Record<string, string> = {};
+            const mockKv = {
+                put: async (key: string, val: string) => { mockKvStore[key] = val; },
+                get: async (key: string) => mockKvStore[key] || null
+            } as unknown as KVNamespace;
+
+            const postReq = new Request('http://localhost/duckai/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer test-admin-key'
+                },
+                body: JSON.stringify({ vqd: 'harvested-vqd-token-999' })
+            });
+
+            const postRes = await worker.fetch(postReq, {
+                ADMIN_KEY: 'test-admin-key',
+                ZEROKEY_KV: mockKv
+            });
+            const postData = await postRes.json() as any;
+
+            expect(postRes.status).toBe(200);
+            expect(postData?.success).toBe(true);
+            expect(postData?.storedInKv).toBe(true);
+            expect(postData?.tokenLength).toBe('harvested-vqd-token-999'.length);
+            expect(mockKvStore['DUCKAI_VQD']).toBe('harvested-vqd-token-999');
+
+            // Now test GET /duckai/token
+            const getReq = new Request('http://localhost/duckai/token', {
+                method: 'GET',
+                headers: {
+                    'Authorization': 'Bearer test-admin-key'
+                }
+            });
+            const getRes = await worker.fetch(getReq, {
+                ADMIN_KEY: 'test-admin-key',
+                ZEROKEY_KV: mockKv
+            });
+            const getData = await getRes.json() as any;
+
+            expect(getRes.status).toBe(200);
+            expect(getData?.hasToken).toBe(true);
+            expect(getData?.tokenLength).toBe('harvested-vqd-token-999'.length);
+            expect(getData?.storedInKv).toBe(true);
+        });
+
+        it('/duckai/token rejects POST with missing or empty vqd', async () => {
+            const req = new Request('http://localhost/duckai/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer test-admin-key'
+                },
+                body: JSON.stringify({ vqd: '   ' })
+            });
+            const res = await worker.fetch(req, { ADMIN_KEY: 'test-admin-key' });
+            const data = await res.json() as any;
+
+            expect(res.status).toBe(400);
+            expect(data?.error?.code).toBe('missing_vqd');
+        });
+    });
 });

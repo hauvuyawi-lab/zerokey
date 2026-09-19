@@ -3,17 +3,20 @@
     "version": "1.0.0",
     "private": true,
     "description": "Anonymous Edge Multi-Model AI Gateway for Cloudflare Workers (OpenAI-compatible)",
+    "type": "module",
     "main": "src/index.ts",
     "scripts": {
         "dev": "wrangler dev",
         "deploy": "wrangler deploy",
         "test": "bun test",
-        "typecheck": "tsc --noEmit"
+        "typecheck": "tsc --noEmit",
+        "harvest": "node scripts/harvest.js"
     },
     "devDependencies": {
         "@cloudflare/workers-types": "^5.20260919.1",
         "@types/node": "^22.0.0",
         "bun-types": "^1.4.2",
+        "puppeteer-core": "^25.11.0",
         "typescript": "^5.0.0",
         "wrangler": "^4.135.0"
     },

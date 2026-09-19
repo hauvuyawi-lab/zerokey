@@ -56,6 +56,34 @@ export interface AskDeepAiOptions {
     userAgent?: string;
 }
 
+// --- DuckAI Provider Types ---
+
+export interface DuckAiModelInfo {
+    id: string;
+    name: string;
+    provider: string;
+    modelShortName?: string;
+    modelName?: string;
+    modelVariant?: string;
+    entityHasAccess: boolean;
+    label?: string | null;
+}
+
+export interface DuckAiModelsResponse {
+    source: 'api';
+    count: number;
+    models: DuckAiModelInfo[];
+}
+
+export type DuckAiModelId = string;
+
+export interface AskDuckAiOptions {
+    model?: DuckAiModelId;
+    onChunk?: ((token: string) => void) | null;
+    userAgent?: string;
+    vqd?: string;
+}
+
 // --- OpenAI API Specification Types ---
 
 export interface ChatMessage {
