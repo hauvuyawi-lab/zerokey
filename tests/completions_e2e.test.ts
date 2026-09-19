@@ -260,4 +260,29 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
             expect(data?.error?.code).toBe('missing_vqd');
         });
     });
+
+    it('handles multimodal content arrays (images/files) in /v1/chat/completions without crashing', async () => {
+        const req = new Request('http://localhost/v1/chat/completions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'standard',
+                messages: [
+                    {
+                        role: 'user',
+                        content: [
+                            { type: 'text', text: 'Say "Multimodal safe"' },
+                            { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' } }
+                        ]
+                    }
+                ],
+                stream: false
+            })
+        });
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
+
+        expect(res.status).toBe(200);
+        expect(data?.choices?.[0]?.message?.content).toBeTruthy();
+    }, 15000);
 });

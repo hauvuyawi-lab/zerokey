@@ -126,6 +126,42 @@ describe('Router Logic (lib/providers/router.ts)', () => {
             expect(normalizeMessages([])).toBe('');
             expect(normalizeMessages([{ role: 'user', content: '' }])).toBe('');
         });
+
+        it('should parse multimodal content arrays (images, audio, files) without throwing errors', () => {
+            const multimodalMessages = [
+                {
+                    role: 'user' as const,
+                    content: [
+                        { type: 'text', text: 'Can you describe this image and audio?' },
+                        { type: 'image_url', image_url: { url: 'data:image/png;base64,...' } },
+                        { type: 'input_audio', input_audio: { data: '...', format: 'wav' } }
+                    ]
+                }
+            ];
+            const prompt = normalizeMessages(multimodalMessages);
+            expect(prompt).toContain('Can you describe this image and audio?');
+            expect(prompt).toContain('[Attached Image]');
+            expect(prompt).toContain('[Attached Audio]');
+        });
+
+        it('should handle multi-turn conversations with multimodal attachments', () => {
+            const messages = [
+                { role: 'system' as const, content: 'You are a helpful assistant' },
+                {
+                    role: 'user' as const,
+                    content: [
+                        { type: 'text', text: 'Look at this file' },
+                        { type: 'file', file: { name: 'document.pdf' } }
+                    ]
+                },
+                { role: 'assistant' as const, content: 'I see your attached file.' },
+                { role: 'user' as const, content: 'Summarize it' }
+            ];
+            const prompt = normalizeMessages(messages);
+            expect(prompt).toContain('Instructions: You are a helpful assistant');
+            expect(prompt).toContain('[Attached File]');
+            expect(prompt).toContain('Summarize it');
+        });
     });
 
     describe('extractPrompt', () => {

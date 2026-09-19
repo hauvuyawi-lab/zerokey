@@ -6,8 +6,9 @@
 import { askGemini, getGeminiModels } from './gemini';
 import { askDuckAi, fetchDuckAiModels, resolveDuckAiModel } from './duckai';
 import { askDeepAi, fetchDeepAiModels } from './deepai';
-import type {
-    ChatMessage,
+import {
+    extractContentText,
+    type ChatMessage,
     ProviderResult,
     OpenAIModelListResponse,
     OpenAIModelItem
@@ -22,19 +23,20 @@ export function normalizeMessages(messages: ChatMessage[]): string {
     }
 
     if (messages.length === 1 && messages[0].content) {
-        return messages[0].content.trim();
+        return extractContentText(messages[0].content);
     }
 
     const sys: string[] = [];
     const conversation: Array<{ role: string; content: string }> = [];
 
     for (const msg of messages) {
-        if (!msg.content) continue;
-        const role = msg.role.toLowerCase();
+        const text = extractContentText(msg?.content);
+        if (!text) continue;
+        const role = (msg.role || '').toLowerCase();
         if (role === 'system' || role === 'developer') {
-            sys.push(msg.content.trim());
+            sys.push(text);
         } else {
-            conversation.push({ role, content: msg.content.trim() });
+            conversation.push({ role, content: text });
         }
     }
 

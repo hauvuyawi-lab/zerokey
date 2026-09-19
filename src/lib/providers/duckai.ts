@@ -180,13 +180,15 @@ function foldMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistan
 
     for (const m of messages) {
         if (!m || typeof m !== 'object') continue;
-        const role = m.role.toLowerCase();
+        const role = (m.role || '').toLowerCase();
+        const text = extractContentText(m.content);
+        if (!text) continue;
         if (role === 'system' || role === 'developer') {
-            if (m.content) sys.push(String(m.content));
+            sys.push(text);
         } else {
             rest.push({
                 role: role === 'assistant' ? 'assistant' : 'user',
-                content: String(m.content || '')
+                content: text
             });
         }
     }

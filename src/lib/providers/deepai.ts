@@ -1,5 +1,6 @@
-import type {
-    DeepAiModelInfo,
+import {
+    extractContentText,
+    type DeepAiModelInfo,
     DeepAiModelsResponse,
     FetchModelsOptions,
     AskDeepAiOptions,
@@ -211,7 +212,7 @@ export async function askDeepAi(
         for (const m of promptOrMessages) {
             if (!m || typeof m !== 'object') continue;
             const role = (m.role || '').toLowerCase();
-            const content = String(m.content || '').trim();
+            const content = extractContentText(m.content);
             if (!content) continue;
 
             if (role === 'system' || role === 'developer') {
