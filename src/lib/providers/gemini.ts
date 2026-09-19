@@ -1,5 +1,4 @@
 import type { GeminiResult, AskGeminiOptions } from './types';
-import { fetchWithProxy } from '../proxy';
 
 // Re-export interface for convenience
 export type { GeminiResult, AskGeminiOptions };
@@ -115,32 +114,14 @@ export async function askGemini(
     let url = `https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=${encodeURIComponent(bl)}&f.sid=0&hl=en-US&_reqid=${reqId}&rt=c`;
 
     let controller = new AbortController();
-    let res = await fetchWithProxy(
-        url,
-        {
-            method: 'POST',
-            signal: controller.signal,
-            headers,
-            body
-        },
-        env
-    );
+    let res = await fetch(url, { method: 'POST', signal: controller.signal, headers, body });
 
     // If default bl is rejected (Google updated build), auto-fetch latest bl and retry
     if (!res.ok) {
         bl = await fetchLatestBl();
         url = `https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=${encodeURIComponent(bl)}&f.sid=0&hl=en-US&_reqid=${reqId}&rt=c`;
         controller = new AbortController();
-        res = await fetchWithProxy(
-            url,
-            {
-                method: 'POST',
-                signal: controller.signal,
-                headers,
-                body
-            },
-            env
-        );
+        res = await fetch(url, { method: 'POST', signal: controller.signal, headers, body });
         if (!res.ok) {
             throw new Error(`Gemini request failed (${res.status})`);
         }

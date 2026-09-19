@@ -11,7 +11,6 @@ import type {
     ProviderResult,
     ChatMessage
 } from './types';
-import { fetchWithProxy } from '../proxy';
 
 const DEFAULT_USER_AGENT =
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -309,9 +308,7 @@ export async function askDuckAi(
         durableStream: envelope
     };
 
-    const res = await fetchWithProxy(
-        DUCK_CHAT_URL,
-        {
+    const res = await fetch(DUCK_CHAT_URL, {
             method: 'POST',
             headers: {
                 'User-Agent': userAgent,
@@ -325,9 +322,7 @@ export async function askDuckAi(
                 'x-ddg-journey-id': envelope.conversationId
             },
             body: JSON.stringify(body)
-        },
-        env
-    );
+    });
 
     if (res.status === 418) {
         throw new Error(

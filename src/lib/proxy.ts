@@ -82,7 +82,7 @@ export async function fetchWithProxy(
         const res = await fetch(proxyUrl, proxyInit);
 
         // If proxy returned a gateway error (502/504), fallback to direct fetch
-        if (res.status === 502 || res.status === 504) {
+        if (res.status >= 500 || res.status === 404 || res.status === 403 || res.status === 429 || res.status === 400) {
             return fetch(targetUrl, init);
         }
 

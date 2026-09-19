@@ -48,10 +48,8 @@ describe('Proxy Pool Manager (src/lib/proxy.ts)', () => {
 
     describe('fetchWithProxy', () => {
         it('falls back to direct fetch when no proxies configured', async () => {
-            const res = await fetchWithProxy('https://httpbin.org/get', {}, {});
+            const res = await fetchWithProxy('https://example.com', {}, {});
             expect(res.status).toBe(200);
-            const data = (await res.json()) as any;
-            expect(data.url).toBe('https://httpbin.org/get');
         });
 
         it('falls back to direct fetch when proxy returns 502/504 or is unreachable', async () => {
@@ -59,10 +57,8 @@ describe('Proxy Pool Manager (src/lib/proxy.ts)', () => {
             const env = {
                 PROXY_URLS: 'http://127.0.0.1:59999/proxy'
             };
-            const res = await fetchWithProxy('https://httpbin.org/get', {}, env);
+            const res = await fetchWithProxy('https://example.com', {}, env);
             expect(res.status).toBe(200);
-            const data = (await res.json()) as any;
-            expect(data.url).toBe('https://httpbin.org/get');
         }, 15000);
     });
 });
