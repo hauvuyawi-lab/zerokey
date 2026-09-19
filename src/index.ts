@@ -63,15 +63,25 @@ export default {
                 });
             }
 
-            // 3. /v1/models
-            if (path === '/v1/models') {
+            // 3. /v1/models & /v1/models/:model
+            if (path === '/v1/models' || path.startsWith('/v1/models/')) {
                 if (method !== 'GET') {
                     return jsonError(405, `Method ${method} not allowed. Use GET.`, 'method_not_allowed');
                 }
                 const models = await getUnifiedOpenAIModels();
-                return jsonResponse(models, 200, {
-                    'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400'
-                });
+                if (path === '/v1/models') {
+                    return jsonResponse(models, 200, {
+                        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400'
+                    });
+                }
+                const modelId = decodeURIComponent(path.slice('/v1/models/'.length)).trim();
+                const found = models.data.find(m => m.id.toLowerCase() === modelId.toLowerCase());
+                if (found) {
+                    return jsonResponse(found, 200, {
+                        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400'
+                    });
+                }
+                return jsonError(404, `The model '${modelId}' does not exist`, 'model_not_found', 'invalid_request_error', 'model');
             }
 
             // 4. /v1/chat/completions
@@ -80,6 +90,11 @@ export default {
                     return jsonError(405, `Method ${method} not allowed. Use POST.`, 'method_not_allowed');
                 }
                 return handleChatCompletions(request, url, env);
+            }
+
+            // OpenAI spec: invalid route under /v1
+            if (path.startsWith('/v1')) {
+                return jsonError(404, `Invalid URL (${method} ${path})`, 'invalid_url', 'invalid_request_error');
             }
 
             // 5. /duckai/token (Autonomous VQD token ingestion & status check)
@@ -101,7 +116,7 @@ export default {
         } catch (err: any) {
             console.error('[WORKER ERROR]', err);
             const status = resolveHttpStatus(err);
-            return jsonError(status, err?.message || 'Internal Server Error', 'server_error');
+            return jsonError(status, err?.message || 'Internal Server Error', 'server_error', status >= 500 ? 'server_error' : 'invalid_request_error');
         }
     }
 };
@@ -117,15 +132,29 @@ async function handleChatCompletions(request: Request, url: URL, env?: Env): Pro
         return jsonError(400, 'Invalid JSON payload in request body.', 'invalid_json');
     }
 
-    const { model, messages, stream = false } = body || {};
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return jsonError(400, 'Request body must be a valid JSON object.', 'invalid_request_error');
+    }
+
+    const { model, messages, stream = false, stream_options } = body;
 
     if (!Array.isArray(messages) || messages.length === 0) {
-        return jsonError(400, 'Missing or invalid "messages" array in request body.', 'missing_messages');
+        return jsonError(400, 'Missing or invalid "messages" array in request body.', 'missing_messages', 'invalid_request_error', 'messages');
+    }
+
+    for (let i = 0; i < messages.length; i++) {
+        const msg = messages[i];
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+            return jsonError(400, `Message at index ${i} must be a valid JSON object.`, 'invalid_message', 'invalid_request_error', `messages[${i}]`);
+        }
+        if (!msg.role || typeof msg.role !== 'string') {
+            return jsonError(400, `Message at index ${i} is missing required 'role' field.`, 'missing_role', 'invalid_request_error', `messages[${i}].role`);
+        }
     }
 
     const prompt = normalizeMessages(messages);
     if (!prompt) {
-        return jsonError(400, 'No message content provided in "messages" array.', 'empty_prompt');
+        return jsonError(400, 'No message content provided in "messages" array.', 'empty_prompt', 'invalid_request_error', 'messages');
     }
 
     // Auto-continuation: OFF by default. Opt-in strictly via query parameter (?ac=1 or ?auto_continue=true).
@@ -152,10 +181,14 @@ async function handleChatCompletions(request: Request, url: URL, env?: Env): Pro
                         object: 'chat.completion.chunk',
                         created,
                         model: activeModel,
+                        system_fingerprint: null,
                         choices: [
                             {
                                 index: 0,
-                                delta: chunkSeq === 0 ? { role: 'assistant', content: text } : { content: text },
+                                delta: chunkSeq === 0
+                                    ? { role: 'assistant', content: text, refusal: null }
+                                    : { content: text },
+                                logprobs: null,
                                 finish_reason: null
                             }
                         ]
@@ -219,26 +252,54 @@ async function handleChatCompletions(request: Request, url: URL, env?: Env): Pro
                     object: 'chat.completion.chunk',
                     created,
                     model: activeModel,
+                    system_fingerprint: null,
                     choices: [
                         {
                             index: 0,
                             delta: {},
+                            logprobs: null,
                             finish_reason: 'stop'
                         }
                     ]
                 };
                 await sse.writeChunk(stopChunk);
+
+                // Include usage chunk if stream_options.include_usage was requested
+                if (stream_options?.include_usage) {
+                    const usageChunk: ChatCompletionChunk = {
+                        id,
+                        object: 'chat.completion.chunk',
+                        created,
+                        model: activeModel,
+                        system_fingerprint: null,
+                        choices: [],
+                        usage: {
+                            prompt_tokens: Math.ceil(prompt.length / 4),
+                            completion_tokens: Math.ceil(accumulatedText.length / 4),
+                            total_tokens: Math.ceil((prompt.length + accumulatedText.length) / 4)
+                        }
+                    };
+                    await sse.writeChunk(usageChunk);
+                }
+
                 await sse.writeDone();
             } catch (streamErr: any) {
                 console.error('[STREAM ERROR]', streamErr);
-                await sse.writeChunk({ error: streamErr?.message || 'Streaming execution error' });
+                await sse.writeChunk({
+                    error: {
+                        message: streamErr?.message || 'Streaming execution error',
+                        type: 'server_error',
+                        param: null,
+                        code: 'stream_error'
+                    }
+                });
                 await sse.writeDone();
             } finally {
                 await sse.close();
             }
         })();
 
-        return sse.toResponse(200);
+        return sse.toResponse(200, { 'x-request-id': id });
     }
 
     // --- Instant Mode (Non-Streaming) ---
@@ -278,13 +339,16 @@ async function handleChatCompletions(request: Request, url: URL, env?: Env): Pro
         object: 'chat.completion',
         created,
         model: activeModel,
+        system_fingerprint: null,
         choices: [
             {
                 index: 0,
                 message: {
                     role: 'assistant',
-                    content: fullText
+                    content: fullText,
+                    refusal: null
                 },
+                logprobs: null,
                 finish_reason: 'stop'
             }
         ],
@@ -295,7 +359,7 @@ async function handleChatCompletions(request: Request, url: URL, env?: Env): Pro
         }
     };
 
-    return jsonResponse(responsePayload);
+    return jsonResponse(responsePayload, 200, { 'x-request-id': id });
 }
 
 /**

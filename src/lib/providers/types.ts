@@ -34,6 +34,24 @@ export interface FetchModelsOptions {
     userAgent?: string;
 }
 
+// --- Gemini Provider Types ---
+
+export interface GeminiModelInfo {
+    id: string;
+    name: string;
+    provider: 'google';
+    modelShortName?: string;
+    modelName?: string;
+    entityHasAccess: boolean;
+    label?: string | null;
+}
+
+export interface GeminiModelsResponse {
+    source: 'api' | 'cache' | 'fallback';
+    count: number;
+    models: GeminiModelInfo[];
+}
+
 // --- DuckAI Provider Types ---
 
 export interface DuckAiModelInfo {
@@ -139,6 +157,10 @@ export interface ChatCompletionRequest {
     stream?: boolean;
     temperature?: number;
     max_tokens?: number;
+    stream_options?: {
+        include_usage?: boolean;
+    };
+    [key: string]: any;
 }
 
 export interface ChatCompletionChoice {
@@ -146,7 +168,9 @@ export interface ChatCompletionChoice {
     message: {
         role: 'assistant';
         content: string;
+        refusal: string | null;
     };
+    logprobs: null;
     finish_reason: 'stop' | 'length' | null;
 }
 
@@ -155,6 +179,7 @@ export interface ChatCompletionResponse {
     object: 'chat.completion';
     created: number;
     model: string;
+    system_fingerprint: string | null;
     choices: ChatCompletionChoice[];
     usage: {
         prompt_tokens: number;
@@ -166,12 +191,14 @@ export interface ChatCompletionResponse {
 export interface ChatCompletionChunkDelta {
     role?: 'assistant';
     content?: string;
+    refusal?: string | null;
 }
 
 export interface ChatCompletionChunkChoice {
     index: number;
     delta: ChatCompletionChunkDelta;
-    finish_reason: 'stop' | null;
+    logprobs: null;
+    finish_reason: 'stop' | 'length' | null;
 }
 
 export interface ChatCompletionChunk {
@@ -179,7 +206,13 @@ export interface ChatCompletionChunk {
     object: 'chat.completion.chunk';
     created: number;
     model: string;
+    system_fingerprint: string | null;
     choices: ChatCompletionChunkChoice[];
+    usage?: {
+        prompt_tokens: number;
+        completion_tokens: number;
+        total_tokens: number;
+    } | null;
 }
 
 export interface OpenAIModelItem {

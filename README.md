@@ -71,17 +71,17 @@ Standard OpenAI-compatible payload:
 - **Query Parameters**:
   - `?ac=1` (or `?auto_continue=true`): Opt in to auto-continuation if output hits upstream length limits. Disabled by default.
 
-### 2. Model Catalog: `GET /v1/models`
+### 2. Model Catalog: `GET /v1/models` & `GET /v1/models/{model}`
 
-Returns the live, dynamically discovered, and deduplicated catalog across all providers:
+Returns the live, dynamically discovered, and deduplicated catalog across all providers, or retrieves a specific model object:
 
 ```json
 {
   "object": "list",
   "data": [
-    { "id": "gemini", "object": "model", "owned_by": "google" },
-    { "id": "claude-haiku-4-5", "object": "model", "owned_by": "anthropic" },
-    { "id": "llama-3.3-70b-instruct", "object": "model", "owned_by": "meta" }
+    { "id": "gemini-3.5-flash-lite", "object": "model", "created": 1773800000, "owned_by": "google" },
+    { "id": "claude-haiku-4-5", "object": "model", "created": 1773800000, "owned_by": "anthropic" },
+    { "id": "llama-3.3-70b-instruct", "object": "model", "created": 1773800000, "owned_by": "meta" }
   ]
 }
 ```
@@ -197,7 +197,7 @@ DuckAI uses anti-bot challenge passes (`x-vqd-hash-1`) that expire periodically.
 # Install dependencies
 bun install
 
-# Run full test suite (77 tests covering scrapers, router, and worker)
+# Run full test suite (90 tests covering scrapers, router, and worker)
 bun test
 
 # Type check

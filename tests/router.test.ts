@@ -6,14 +6,17 @@ import {
     getUnifiedOpenAIModels
 } from '../src/lib/providers/router';
 import { fetchDuckAiModels } from '../src/lib/providers/duckai';
+import { getDefaultGeminiModel } from '../src/lib/providers/gemini';
 
 describe('Router Logic (lib/providers/router.ts)', () => {
     describe('resolveProvider - Direct Provider Routing (Gemini & DuckAI)', () => {
-        it('should route gemini aliases to the gemini provider', async () => {
-            expect(await resolveProvider('gemini')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
-            expect(await resolveProvider('GEMINI')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
-            expect(await resolveProvider('gemini-pro')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
-            expect(await resolveProvider('google')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
+        it('should route gemini requests to the gemini provider with dynamic target model', async () => {
+            const defaultModel = await getDefaultGeminiModel();
+            expect(await resolveProvider('gemini')).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider('GEMINI')).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider('gemini-pro')).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider('google')).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider(defaultModel)).toEqual({ provider: 'gemini', targetModel: defaultModel });
         });
 
         it('should dynamically route live free DuckAI models to duckai provider', async () => {
@@ -35,25 +38,30 @@ describe('Router Logic (lib/providers/router.ts)', () => {
         });
 
         it('should fallback to gemini provider when no model is specified or unrecognized', async () => {
-            expect(await resolveProvider()).toEqual({ provider: 'gemini', targetModel: 'gemini' });
-            expect(await resolveProvider(undefined)).toEqual({ provider: 'gemini', targetModel: 'gemini' });
-            expect(await resolveProvider('')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
-            expect(await resolveProvider('unknown-model-xyz')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
+            const defaultModel = await getDefaultGeminiModel();
+            expect(await resolveProvider()).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider(undefined)).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider('')).toEqual({ provider: 'gemini', targetModel: defaultModel });
+            expect(await resolveProvider('unknown-model-xyz')).toEqual({ provider: 'gemini', targetModel: defaultModel });
         });
     });
 
     describe('getUnifiedOpenAIModels catalog deduplication', () => {
-        it('should aggregate models across Gemini and DuckAI with zero duplicates', async () => {
+        it('should aggregate models across Gemini and DuckAI with zero duplicates and no aliases', async () => {
             const result = await getUnifiedOpenAIModels();
             expect(result).toBeDefined();
             expect(result.object).toBe('list');
             expect(Array.isArray(result.data)).toBe(true);
             expect(result.data.length).toBeGreaterThan(0);
 
-            // 1. Verify Gemini is present
-            const gemini = result.data.find(m => m.id.toLowerCase() === 'gemini');
+            // 1. Verify dynamic Gemini model is present and has no alias
+            const defaultModel = await getDefaultGeminiModel();
+            const gemini = result.data.find(m => m.id.toLowerCase() === defaultModel.toLowerCase());
             expect(gemini).toBeDefined();
             expect(gemini?.owned_by).toBe('google');
+
+            // Verify no aliases exist in catalog
+            expect(result.data.some(m => m.id.toLowerCase() === 'gemini')).toBe(false);
 
             // 2. Verify dynamic DuckAI free models are present
             const duckCatalog = await fetchDuckAiModels();

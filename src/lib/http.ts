@@ -49,18 +49,21 @@ export function jsonError(
     status: number,
     message: string,
     code: string = 'api_error',
-    type: string = 'invalid_request_error'
+    type: string = 'invalid_request_error',
+    param: string | null = null,
+    extraHeaders?: HeadersInit
 ): Response {
     return jsonResponse(
         {
             error: {
                 message,
                 type,
-                param: null,
+                param,
                 code
             }
         },
-        status
+        status,
+        extraHeaders
     );
 }
 

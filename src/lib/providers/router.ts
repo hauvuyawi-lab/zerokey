@@ -3,7 +3,14 @@
  * Routes between Google Gemini and DuckAI with dynamic discovery.
  */
 
-import { askGemini, getGeminiModels } from './gemini';
+import {
+    askGemini,
+    getGeminiModels,
+    fetchGeminiModels,
+    resolveGeminiModel,
+    getDefaultGeminiModel,
+    formatGeminiModelId
+} from './gemini';
 import { askDuckAi, fetchDuckAiModels, resolveDuckAiModel } from './duckai';
 import {
     extractContentText,
@@ -85,16 +92,50 @@ export async function resolveProvider(modelName?: string): Promise<{
     provider: 'gemini' | 'duckai';
     targetModel?: string;
 }> {
+    const defaultGemini = await getDefaultGeminiModel();
+
     if (!modelName || !modelName.trim()) {
-        return { provider: 'gemini', targetModel: 'gemini' };
+        return { provider: 'gemini', targetModel: defaultGemini };
     }
 
     const clean = modelName.trim();
     const lower = clean.toLowerCase();
 
-    // 1. Google Gemini
-    if (lower === 'gemini' || lower.startsWith('gemini-') || lower === 'google') {
-        return { provider: 'gemini', targetModel: 'gemini' };
+    // 1. Google Gemini explicit prefix
+    if (lower.startsWith('gemini/')) {
+        const target = await resolveGeminiModel(clean.slice(7));
+        return { provider: 'gemini', targetModel: target };
+    }
+
+    // Direct match for default Gemini requests
+    if (lower === 'gemini' || lower === 'google') {
+        return { provider: 'gemini', targetModel: defaultGemini };
+    }
+
+    // Check dynamic Gemini models (e.g. "gemini-3.5-flash-lite", "3.5-flash-lite", "3.5 Flash-Lite")
+    try {
+        const geminiData = await fetchGeminiModels();
+        const geminiFound = geminiData.models.find(m => {
+            const mId = m.id.toLowerCase();
+            const mName = (m.name || '').toLowerCase();
+            const mShort = (m.modelShortName || '').toLowerCase();
+            return (
+                mId === lower ||
+                mName === lower ||
+                mShort === lower ||
+                lower.includes(mShort) ||
+                mId.endsWith(lower) ||
+                lower.endsWith(mId)
+            );
+        });
+        if (geminiFound) {
+            return { provider: 'gemini', targetModel: geminiFound.id };
+        }
+    } catch {}
+
+    // Fallback for generic gemini- aliases (e.g. gemini-pro)
+    if (lower.startsWith('gemini-')) {
+        return { provider: 'gemini', targetModel: defaultGemini };
     }
 
     // Explicit duckai/ prefix
@@ -112,9 +153,8 @@ export async function resolveProvider(modelName?: string): Promise<{
             const mShortName = (m.modelShortName || '').toLowerCase();
             return (
                 mId === lower ||
-                mShort === lower ||
                 mName === lower ||
-                mShortName === lower ||
+                mShort === lower ||
                 mId.startsWith(lower) ||
                 lower.startsWith(mShort) ||
                 mShort.replace(/[-_]/g, '') === lower.replace(/[-_]/g, '')
@@ -126,8 +166,8 @@ export async function resolveProvider(modelName?: string): Promise<{
         }
     } catch {}
 
-    // Fallback: Default to Gemini
-    return { provider: 'gemini', targetModel: 'gemini' };
+    // Fallback: Default to Gemini dynamic model
+    return { provider: 'gemini', targetModel: defaultGemini };
 }
 
 /**
@@ -196,13 +236,14 @@ export async function getUnifiedOpenAIModels(): Promise<OpenAIModelListResponse>
             }
         }
     } catch {
+        const fallbackId = formatGeminiModelId('3.5 Flash-Lite');
         models.push({
-            id: 'gemini',
+            id: fallbackId,
             object: 'model',
             created: 1773800000,
             owned_by: 'google'
         });
-        markSeen('gemini');
+        markSeen(fallbackId);
     }
 
     // 2. DuckAI models
