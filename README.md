@@ -34,7 +34,7 @@ Works as a drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, 
 | **Max Output Length** | **~2,500 – 5,000 tokens** (With `?ac=1`) | 4,096 – 16,384 tokens native |
 | **Streaming TTFT** | **~600 ms – 1,200 ms** | ~300 ms – 700 ms |
 | **Native Tool Calling** | Synthetic prompt formatting (JSON prompt) | Native AST `tool_calls` parameter |
-| **Multimodal / Files** | Text-only (No file/image attachments) | Full vision, audio, PDF, and image support |
+| **Multimodal / Files** | Text-only processing (Safely accepts OpenAI multimodal payloads, extracts text & strips binary media) | Full vision, audio, PDF, and image support |
 | **Reliability & SLA** | Best-effort (subject to upstream web changes) | 99.9% uptime SLA with versioned stability |
 | **Best Suited For** | Personal scripts, CLI tools, local bots | Commercial production, enterprise SaaS |
 
@@ -43,7 +43,7 @@ Works as a drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, 
 ## Known Limitations
 
 1. **Input Context Limits**: Upstream web interfaces truncate prompts beyond ~4,000–8,000 tokens. It is not suitable for feeding entire repositories or large document dumps into a single prompt.
-2. **Text-Only**: Image uploads, audio generation, and file attachments are not supported.
+2. **Text-Only Modality**: Upstream free anonymous endpoints are purely text-based. While ZeroKey safely accepts standard OpenAI multimodal payloads (images, audio clips, file attachments) without crashing or throwing JSON errors, it extracts all prompt text and appends contextual tags (e.g. `[Attached Image]`) while stripping heavy binary tensors. Models cannot visually inspect images or listen to audio recordings.
 3. **No Native Tool Calling AST**: Models do not support the structured `tool_calls` JSON schema parameter natively. If you need JSON outputs or function calls, instruct the model in your prompt to respond strictly in JSON.
 4. **Upstream Challenges & Rate Limits**: Upstream web endpoints utilize anti-bot mitigations. While DeepAI and Gemini handle standard usage without sessions, DuckAI requires an active VQD token (maintained by the automated harvester). Using the optional Vercel Edge proxy pool distributes IP load and prevents rate limits.
 5. **No Uptime SLA**: This project reverse-engineers public web endpoints. If Google, DuckAI, or DeepAI changes their frontend scripts, hashing logic, or internal payload structures, endpoints may break until adaptors are updated.
@@ -59,8 +59,9 @@ You can deploy the standalone **[`zerokey-proxy`](https://github.com/hauvuyawi-l
 ```
 [Client] ──► [ZeroKey (Cloudflare Worker)]
                   │ (Rotates across PROXY_URLS)
-                  ├──► [Vercel Edge Proxy 1] ──► [DeepAI / DuckAI / Gemini]
-                  └──► [Vercel Edge Proxy 2] ──► [DeepAI / DuckAI / Gemini]
+                  ├──► (Direct fetch) ───────► [Gemini & DuckAI]
+                  │
+                  └──► (Rotates PROXY_URLS) ──► [Vercel Edge Proxy Pool] ──► [DeepAI]
 ```
 
 ### Configuring `PROXY_URLS` in Worker Environment
@@ -82,7 +83,7 @@ npx wrangler secret put PROXY_URLS
 # Paste your comma-separated list of proxy endpoints
 ```
 
-ZeroKey will automatically distribute requests across all configured proxies, rotating IPs randomly and falling back gracefully if an endpoint is unreachable.
+ZeroKey routes DeepAI requests through your Vercel proxy pool for IP rotation, while Gemini and DuckAI connect directly from Cloudflare (where Google and DuckDuckGo operate reliably without datacenter blocks). If any proxy endpoint fails or times out, ZeroKey automatically falls back to direct fetch.
 
 ---
 
@@ -235,7 +236,7 @@ DuckAI uses anti-bot challenge passes (`x-vqd-hash-1`) that expire periodically.
 # Install dependencies
 bun install
 
-# Run full test suite (90 tests covering scrapers, proxy pool, router, and worker)
+# Run full test suite (93 tests covering scrapers, proxy pool, router, and worker)
 bun test
 
 # Type check
