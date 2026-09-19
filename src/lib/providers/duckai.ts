@@ -3,8 +3,9 @@
  * Autonomous streaming completions, ephemeral RSA cryptography, and dynamic model discovery.
  */
 
-import type {
-    DuckAiModelInfo,
+import {
+    extractContentText,
+    type DuckAiModelInfo,
     DuckAiModelsResponse,
     FetchModelsOptions,
     AskDuckAiOptions,

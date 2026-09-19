@@ -83,5 +83,21 @@ describe('DuckAI Provider (lib/providers/duckai.ts)', () => {
                 askDuckAi('Hello', { vqd: '' }, { ZEROKEY_KV: { get: async () => null } })
             ).rejects.toThrow('DuckAI site pass missing');
         });
+
+        it('should fold messages array including multimodal content without error before VQD check', async () => {
+            const messages = [
+                { role: 'system' as const, content: 'System instruction' },
+                {
+                    role: 'user' as const,
+                    content: [
+                        { type: 'text', text: 'Hello duck' },
+                        { type: 'image_url', image_url: { url: 'data:...' } }
+                    ]
+                }
+            ];
+            await expect(
+                askDuckAi(messages, { vqd: '' }, { ZEROKEY_KV: { get: async () => null } })
+            ).rejects.toThrow('DuckAI site pass missing');
+        });
     });
 });
