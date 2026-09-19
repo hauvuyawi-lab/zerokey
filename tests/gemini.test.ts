@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { cleanResponse, getGeminiModels, fetchLatestBl, askGemini } from '../lib/providers/gemini';
+import { cleanResponse, getGeminiModels, fetchLatestBl, askGemini } from '../src/lib/providers/gemini';
 
 describe('Google Gemini Provider (lib/providers/gemini.ts)', () => {
     describe('cleanResponse', () => {

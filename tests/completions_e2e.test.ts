@@ -1,153 +1,158 @@
 import { describe, it, expect } from 'bun:test';
-import handler from '../api/v1/chat/completions';
-import type { VercelRequest, VercelResponse } from '@vercel/node';
+import worker from '../src/index';
 
-function createMockReq(options: {
-    method?: string;
-    body?: any;
-    headers?: Record<string, string>;
-}): VercelRequest {
-    return {
-        method: options.method || 'POST',
-        headers: options.headers || {},
-        body: options.body || {}
-    } as unknown as VercelRequest;
-}
-
-function createMockRes() {
-    let statusCode = 200;
-    const headers: Record<string, string> = {};
-    let writtenData = '';
-    let ended = false;
-    let jsonBody: any = null;
-
-    const res = {
-        status(code: number) {
-            statusCode = code;
-            return this;
-        },
-        setHeader(k: string, v: string) {
-            headers[k.toLowerCase()] = v;
-            return this;
-        },
-        getHeader(k: string) {
-            return headers[k.toLowerCase()];
-        },
-        writeHead(code: number, hdrs?: Record<string, string>) {
-            statusCode = code;
-            if (hdrs) {
-                for (const [k, v] of Object.entries(hdrs)) {
-                    headers[k.toLowerCase()] = v;
-                }
-            }
-            return this;
-        },
-        write(chunk: any) {
-            writtenData += chunk ? chunk.toString() : '';
-            return true;
-        },
-        end(chunk?: any) {
-            if (chunk) writtenData += chunk.toString();
-            ended = true;
-        },
-        json(data: any) {
-            jsonBody = data;
-            ended = true;
-        },
-        get statusCode() { return statusCode; },
-        get writtenData() { return writtenData; },
-        get jsonBody() { return jsonBody; },
-        get ended() { return ended; },
-        headers
-    };
-
-    return res as unknown as VercelResponse & {
-        statusCode: number;
-        writtenData: string;
-        jsonBody: any;
-        ended: boolean;
-        headers: Record<string, string>;
-    };
-}
-
-describe('E2E /v1/chat/completions Handler (Local Verification)', () => {
+describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
     it('handles CORS OPTIONS preflight', async () => {
-        const req = createMockReq({ method: 'OPTIONS' });
-        const res = createMockRes();
+        const req = new Request('http://localhost/v1/chat/completions', { method: 'OPTIONS' });
+        const res = await worker.fetch(req);
 
-        await handler(req, res);
-
-        expect(res.statusCode).toBe(200);
-        expect(res.headers['x-powered-by']).toBe('zerokey');
+        expect(res.status).toBe(200);
+        expect(res.headers.get('x-powered-by')).toBe('zerokey-edge');
+        expect(res.headers.get('access-control-allow-origin')).toBe('*');
     });
 
     it('rejects GET requests with 405 Method Not Allowed', async () => {
-        const req = createMockReq({ method: 'GET' });
-        const res = createMockRes();
+        const req = new Request('http://localhost/v1/chat/completions', { method: 'GET' });
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
 
-        await handler(req, res);
-
-        expect(res.statusCode).toBe(405);
-        expect(res.jsonBody?.error?.code).toBe('method_not_allowed');
+        expect(res.status).toBe(405);
+        expect(data?.error?.code).toBe('method_not_allowed');
     });
 
     it('rejects empty messages array with 400', async () => {
-        const req = createMockReq({
+        const req = new Request('http://localhost/v1/chat/completions', {
             method: 'POST',
-            body: { messages: [] }
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages: [] })
         });
-        const res = createMockRes();
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
 
-        await handler(req, res);
-
-        expect(res.statusCode).toBe(400);
-        expect(res.jsonBody?.error?.code).toBe('missing_messages');
+        expect(res.status).toBe(400);
+        expect(data?.error?.code).toBe('missing_messages');
     });
 
-    it('executes real instant mode (stream: false) with auto_continue enabled', async () => {
-        const req = createMockReq({
+    it('serves /v1/models catalog', async () => {
+        const req = new Request('http://localhost/v1/models', { method: 'GET' });
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
+
+        expect(res.status).toBe(200);
+        expect(data?.object).toBe('list');
+        expect(Array.isArray(data?.data)).toBe(true);
+        expect(data.data.length).toBeGreaterThan(0);
+    });
+
+    it('executes real instant mode (stream: false) without continuation (default)', async () => {
+        const req = new Request('http://localhost/v1/chat/completions', {
             method: 'POST',
-            body: {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
                 model: 'standard',
-                messages: [{ role: 'user', content: 'Say "AutoContinue Test Passed" and nothing else.' }],
-                stream: false,
-                auto_continue: true
-            }
+                messages: [{ role: 'user', content: 'Say "Cloudflare Worker Test Passed" and nothing else.' }],
+                stream: false
+            })
         });
-        const res = createMockRes();
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
 
-        await handler(req, res);
-
-        expect(res.statusCode).toBe(200);
-        expect(res.jsonBody?.object).toBe('chat.completion');
-        expect(res.jsonBody?.choices?.[0]?.message?.content).toBeTruthy();
-        expect(res.jsonBody?.choices?.[0]?.finish_reason).toBe('stop');
-        expect(res.jsonBody?.usage?.completion_tokens).toBeGreaterThan(0);
+        expect(res.status).toBe(200);
+        expect(data?.object).toBe('chat.completion');
+        expect(data?.choices?.[0]?.message?.content).toBeTruthy();
+        expect(data?.choices?.[0]?.finish_reason).toBe('stop');
+        expect(data?.usage?.completion_tokens).toBeGreaterThan(0);
     }, 15000);
 
-    it('executes real streaming mode (stream: true) with SSE output', async () => {
-        const req = createMockReq({
+    it('executes real streaming mode (stream: true) with Web Stream SSE output', async () => {
+        const req = new Request('http://localhost/v1/chat/completions', {
             method: 'POST',
-            body: {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
                 model: 'standard',
                 messages: [{ role: 'user', content: 'Count from 1 to 3.' }],
-                stream: true,
-                auto_continue: true
-            }
+                stream: true
+            })
         });
-        const res = createMockRes();
+        const res = await worker.fetch(req);
 
-        await handler(req, res);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('content-type')).toContain('text/event-stream');
 
-        expect(res.statusCode).toBe(200);
-        expect(res.headers['content-type']).toContain('text/event-stream');
-        expect(res.writtenData).toContain('data: ');
-        expect(res.writtenData).toContain('data: [DONE]');
+        const reader = res.body?.getReader();
+        expect(reader).toBeTruthy();
 
-        // Validate chunks parse as valid JSON
-        const lines = res.writtenData.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]'));
-        expect(lines.length).toBeGreaterThan(1);
+        const decoder = new TextDecoder();
+        let writtenData = '';
+
+        while (true) {
+            const { done, value } = await reader!.read();
+            if (done) break;
+            writtenData += decoder.decode(value, { stream: true });
+        }
+
+        expect(writtenData).toContain('data: ');
+        expect(writtenData).toContain('data: [DONE]');
+
+        const lines = writtenData.split('\n').filter(l => l.startsWith('data: ') && !l.includes('[DONE]'));
+        expect(lines.length).toBeGreaterThan(0);
         const parsed = JSON.parse(lines[0].replace('data: ', ''));
         expect(parsed.object).toBe('chat.completion.chunk');
+    }, 15000);
+
+    it('supports opt-in auto_continue strictly via query parameter ?ac=1', async () => {
+        const req = new Request('http://localhost/v1/chat/completions?ac=1', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'standard',
+                messages: [{ role: 'user', content: 'Say "Continuation enabled test ok."' }],
+                stream: false
+            })
+        });
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
+
+        expect(res.status).toBe(200);
+        expect(data?.choices?.[0]?.message?.content).toBeTruthy();
+    }, 15000);
+
+    it('ignores header or body flags for auto_continue (query param only)', async () => {
+        // Without ?ac=1, header and body flags are ignored
+        const req = new Request('http://localhost/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-auto-continue': '1'
+            },
+            body: JSON.stringify({
+                model: 'standard',
+                messages: [{ role: 'user', content: 'Say "Standard test ok."' }],
+                auto_continue: true,
+                stream: false
+            })
+        });
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
+
+        expect(res.status).toBe(200);
+        expect(data?.choices?.[0]?.message?.content).toBeTruthy();
+    }, 15000);
+
+    it('supports opt-in auto_continue on gemini model via ?ac=1', async () => {
+        const req = new Request('http://localhost/v1/chat/completions?ac=1', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: 'gemini',
+                messages: [{ role: 'user', content: 'Say "Gemini Continuation Test Passed" and nothing else.' }],
+                stream: false
+            })
+        });
+        const res = await worker.fetch(req);
+        const data = await res.json() as any;
+
+        expect(res.status).toBe(200);
+        expect(data?.choices?.[0]?.message?.content).toBeTruthy();
     }, 15000);
 });

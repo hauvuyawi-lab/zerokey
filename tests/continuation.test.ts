@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
-import { isTruncated, deduplicateSeam, buildContinuationMessages } from '../lib/continuation';
-import type { ChatMessage } from '../lib/providers/types';
+import { isTruncated, deduplicateSeam, buildContinuationMessages } from '../src/lib/continuation';
+import type { ChatMessage } from '../src/lib/providers/types';
 
 describe('Auto-Continuation Module', () => {
     describe('isTruncated()', () => {

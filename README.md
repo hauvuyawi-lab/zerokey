@@ -1,10 +1,10 @@
 # zerokey
 
-An anonymous, serverless multi-model AI gateway that reverse-engineers public web clients (Google Gemini and DeepAI) into a unified, OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`). 
+An anonymous, edge-native multi-model AI gateway built for **Cloudflare Workers** that reverse-engineers public web clients (Google Gemini and DeepAI) into a unified, OpenAI-compatible API (`/v1/chat/completions`, `/v1/models`). 
 
-Zero API keys, zero accounts, zero credit cards, and zero subscriptions required.
+Zero API keys, zero accounts, zero credit cards, and zero subscriptions required. Runs seamlessly on the **Cloudflare Workers Free Plan** (100,000 req/day).
 
-Works as a seamless drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, Chatbox, Cursor, Continue.dev, or any client supporting a custom `baseURL`.
+Works as a seamless drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, Chatbox, Cursor, Continue.dev, Aider, or any client supporting a custom `baseURL`.
 
 > [!CAUTION]
 > **Read before using:**
@@ -18,15 +18,15 @@ Works as a seamless drop-in replacement with standard OpenAI SDKs, LangChain, Li
 
 ## System Architecture
 
-`zerokey` operates as a stateless proxy layer that translates standard OpenAI HTTP payloads into upstream web protocols in real time:
+`zerokey` operates as a stateless edge proxy layer on Cloudflare Workers using standard Web APIs (`Request`, `Response`, `TransformStream`, `ReadableStream`) that translates standard OpenAI HTTP payloads into upstream web protocols in real time:
 
 ```mermaid
 flowchart TD
     Client["Client (OpenAI SDK / LangChain / Chatbox / IDE)"]
     
-    subgraph Gateway ["zerokey Gateway (Vercel / Node.js / Local)"]
+    subgraph Gateway ["zerokey Gateway (Cloudflare Workers / Edge)"]
         Router["Protocol Router & Model Resolver"]
-        AutoContinue["Auto-Continuation & Seam Deduplicator"]
+        AutoContinue["Auto-Continuation & Seam Deduplicator (Opt-in ?ac=1)"]
         Normalizer["Transcript Normalizer"]
         
         subgraph Providers ["Provider Adaptors"]
@@ -49,113 +49,74 @@ flowchart TD
     Gemini -->|Single Transcript + SNlM0e Token| GoogleBackend
     DeepAIBackend -.->|SSE Tokens| AutoContinue
     GoogleBackend -.->|Stream Chunks| AutoContinue
-    AutoContinue -->|Unbroken OpenAI SSE Stream| Client
+    AutoContinue -->|Unbroken OpenAI SSE Web Stream| Client
 ```
 
 ### Core Subsystems:
 
-1. **Live Model Discovery**: Zero static model lists. On startup/query, the gateway parses DeepAI's client-side JavaScript bundles to extract only currently unlocked, active models (`gpt-4o-mini`, `llama-3.3-70b-instruct`, `deepseek-v3.2`, `qwen3.8-flash`, etc.).
-2. **Island Key Generation**: Re-engineers DeepAI's client-side authentication algorithm by computing a salted triple-MD5 hash based on request headers and salt sequences without requiring cookies or sessions.
-3. **Auto-Continuation Engine**: Automatically detects when a response is cut off mid-code (unclosed code fences, trailing syntax operators, or missing punctuation). It transparently triggers a second pass, strips boundary overlaps via `deduplicateSeam`, and streams one continuous, complete response to the user.
-4. **Multilingual Unicode Boundary Parser**: Detects completion boundaries across Western (Latin/Cyrillic), East Asian CJK (`。`, `！`, `？`), Arabic (`؟`, `؛`), and Indic scripts (`।`).
+1. **Edge-Native Architecture**: Built directly with standard Web APIs (`Request`, `Response`, `ReadableStream`, `TransformStream`) running on Cloudflare's global edge network with sub-millisecond cold starts.
+2. **Live Model Discovery**: Zero static model lists. On startup/query, the gateway parses DeepAI's client-side JavaScript bundles to extract only currently unlocked, active models (`gpt-4o-mini`, `llama-3.3-70b-instruct`, `deepseek-v3.2`, `qwen3.8-flash`, etc.).
+3. **Island Key Generation**: Re-engineers DeepAI's client-side authentication algorithm by computing a salted triple-MD5 hash based on request headers and salt sequences without requiring cookies or sessions.
+4. **Universal Auto-Continuation (All Providers)**: Works across all models and providers (Google Gemini and DeepAI). Auto-continuation is disabled by default and can be opted into via `?ac=1` (or `?auto_continue=true`).
+5. **No Wall-Clock Execution Limit**: On Cloudflare Workers, network I/O waiting does not count toward the 10ms CPU time limit, allowing long streams to flow uninterrupted without arbitrary serverless kill switches.
 
 ---
 
-## Auto-Continuation Mechanism (Bypassing Length & Timeouts)
+## Auto-Continuation Mechanism (Opt-in via `?ac=1`)
 
-When generating long responses or code listings, public web backends cut off outputs around 2,500 tokens, leaving unclosed code fences or broken syntax. Furthermore, serverless platforms like Vercel enforce a 15-second execution limit.
-
-`zerokey` solves both problems via an **Auto-Continuation Sequence**:
+Public web backends enforce a maximum token output limit per turn (~2,500 tokens on DeepAI, and ~5,000–8,000 tokens on Google Gemini). Auto-continuation works across **all providers and models** (Google Gemini, DeepAI, Llama, DeepSeek, Qwen, etc.). When a generation cuts off mid-sentence or mid-code (unclosed code fences, trailing syntax operators, or missing terminal punctuation), `zerokey` automatically continues the generation when the `?ac=1` query parameter is present.
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client as Client / IDE / WebUI
-    participant Gateway as zerokey Gateway
+    actor Client as Client / API Caller
+    participant Gateway as zerokey (Cloudflare Worker)
     participant Upstream as Upstream LLM (DeepAI / Gemini)
 
-    Client->>Gateway: POST /v1/chat/completions (stream: true)
+    Client->>Gateway: POST /v1/chat/completions?ac=1 (stream: true)
     Gateway->>Upstream: Pass 1: Initial Prompt
-    Upstream-->>Gateway: Streams token deltas (TTFT ~300ms–500ms)
-    Gateway-->>Client: Pipes tokens immediately via SSE...
-    Note over Upstream: Upstream hits generation cutoff (~2.5k tokens)<br/>Incomplete code block / mid-sentence!
-    Upstream-->>Gateway: Pass 1 connection closes
+    Upstream-->>Gateway: Streams token deltas
+    Gateway-->>Client: Pipes tokens immediately via TransformStream...
+    Note over Upstream: Upstream hits generation cutoff<br/>Incomplete code block / mid-sentence
+    Upstream-->>Gateway: Pass 1 upstream finishes
 
     rect rgb(235, 245, 255)
-        Note over Gateway: [Auto-Continuation Interceptor]<br/>1. isTruncated() = TRUE (Unclosed fence / operator)<br/>2. Time elapsed < 10.5s (Safe Vercel budget)<br/>3. HOLDS TCP SOCKET OPEN (Suppresses [DONE])
+        Note over Gateway: [Auto-Continuation Interceptor]<br/>1. isTruncated() = TRUE (Unclosed fence / operator)<br/>2. HOLDS STREAM OPEN (Suppresses [DONE])
         Gateway->>Upstream: Pass 2: "Continue in same language without repeating"
         Upstream-->>Gateway: Streams Pass 2 tokens
         Note over Gateway: deduplicateSeam()<br/>Slices off overlapping words & preambles
         Gateway-->>Client: Streams Pass 2 tokens down EXACT SAME connection!
     end
 
-    Note over Upstream: Full code listing finished & closed cleanly
+    Note over Upstream: Full listing finished & closed cleanly
     Gateway-->>Client: data: {"finish_reason": "stop"}
     Gateway-->>Client: data: [DONE]
-    Note over Client: Receives complete, unbroken code without user clicking "continue"!
+    Note over Client: Receives complete, unbroken output seamlessly
 ```
 
-### The 4-Step Bypass Algorithm:
+### Enabling Auto-Continuation:
+Auto-continuation is opt-in strictly via query parameter:
+- `/v1/chat/completions?ac=1` or `/v1/chat/completions?auto_continue=true`
 
-1. **Sub-Second TTFB (Beating Vercel 15s Cutoff)**: Because streaming headers and initial tokens flush within **~300ms–500ms**, Vercel keeps the TCP socket open for **20+ seconds**, permitting over 2,200+ tokens to stream continuously without timing out.
-2. **Universal Truncation Detection**: The `isTruncated()` analyzer inspects token syntax:
-   * **Odd markdown backtick counts** (e.g. 3 backticks without closing 3 backticks).
-   * **Trailing code operators & keywords** (`+`, `-`, `=`, `&&`, `function`, `return`, `const`).
-   * **Missing multilingual punctuation** across Latin, CJK (`。`, `！`), and Arabic scripts (`؟`).
-3. **Socket Hold-Open**: When Pass 1 concludes, the gateway intercepts the stream completion and **suppresses the standard `data: [DONE]` signal**, holding the client connection alive.
-4. **Seam Deduplication & Preamble Stripping**: If the model restarts with conversational filler (*"Sure, continuing:"*) or repeats the last 1–2 words at the boundary, `deduplicateSeam()` slices off the duplicate prefix, producing an invisible transition.
+When omitted, requests run in standard 1:1 single-turn mode.
 
 ---
 
 ## Head-to-Head Comparison: `zerokey` vs. Official Paid APIs
 
-| Feature / Metric | 🔑 zerokey (This Gateway) | 🏢 Official Paid APIs (OpenAI / Google / Anthropic) |
+| Feature / Metric | 🔑 zerokey (Cloudflare Workers) | 🏢 Official Paid APIs (OpenAI / Google / Anthropic) |
 | :--- | :--- | :--- |
 | **Pricing** | **$0.00** (Forever free) | 💳 $0.15 – $15.00 per million tokens |
+| **Hosting Platform** | ⚡ **Cloudflare Workers Free** (100k req/day) | ☁️ Vendor managed infrastructure |
 | **Identity & KYC** | 🥷 **100% Anonymous** (No email, phone, or credit card) | 📝 Requires email, phone verification, and payment card |
 | **Model Variety** | 🎯 **16+ Models Unified** (Gemini, Llama 70B, DeepSeek, Qwen) | 🔒 Locked to single vendor per API key |
 | **Max Input Context** | ⚠️ **4,000 – 8,000 tokens** (Gemini takes ~8k–12k) | 🚀 **128,000 – 2,000,000 tokens** (Whole repositories) |
-| **Max Output Length** | ⚡ **~2,500 – 5,000+ tokens** (With Auto-Continuation) | ⚡ **4,096 – 8,192 tokens** (Stops abruptly on limits) |
+| **Max Output Length** | ⚡ **~2,500 – 5,000+ tokens** (With `?ac=1`) | ⚡ **4,096 – 8,192 tokens** (Stops abruptly on limits) |
 | **Streaming Latency (TTFT)**| ⚡ **~300ms – 800ms** (Sub-second response) | ⚡ **~300ms – 600ms** |
 | **Output Speed** | ⚡ **80 – 110 tokens/second** on top models | ⚡ **60 – 90 tokens/second** |
 | **Native Tool Calling** | ⚠️ Requires synthetic prompt-JSON shim |  Native sampling `tool_calls` AST |
 | **Multimodal / Vision** | ❌ Text-only (Binary attachments unsupported) |  Full Image, Audio, Video, and PDF processing |
 | **Uptime & SLA** | ⚠️ Best-effort hobby (Fragile to UI updates) | 🛡️ 99.9% Commercial SLA with versioned stability |
-
----
-
-## Token Capacity & Performance Benchmarks
-
-Empirical boundary benchmarks run on production cloud deployments:
-
-```
-┌───────────────────────────────┬───────────────────────────────┬───────────────────────────────┐
-│ Provider / Model              │ Max Input Context (Prompt)    │ Max Output Generation (Reply) │
-├───────────────────────────────┼───────────────────────────────┼───────────────────────────────┤
-│ 🔵 Google Gemini              │ 8,000 – 12,000 tokens         │ ~3,500 tokens (Pass 1)        │
-│    (`gemini`, `flash-lite`)   │ (100% needle recall accuracy) │ ~5,000+ tokens (Auto-Continue)│
-├───────────────────────────────┼───────────────────────────────┼───────────────────────────────┤
-│ 🟢 DeepAI Models              │ ~4,000 – 6,000 tokens         │ ~2,600 tokens (Pass 1)        │
-│    (`standard`, `llama-70b`,  │ (Above 6k, web filters risk   │ ~4,500+ tokens (Auto-Continue)│
-│     `deepseek`, `qwen`, etc.) │  truncation or anti-spam)     │                               │
-└───────────────────────────────┴───────────────────────────────┴───────────────────────────────┘
-```
-
-### The 15-Second Vercel Timeout: How Streaming Bypasses It
-On Vercel Serverless (Hobby plan), functions have a default 15-second execution limit. 
-* In **Instant Mode (`stream: false`)**, requests must complete within ~10–14 seconds.
-* In **Streaming Mode (`stream: true`)**, because Time-To-First-Token (TTFT) starts within **~300ms–500ms**, Vercel maintains the active TCP Server-Sent Events stream for **20+ seconds**, allowing generations of **2,200+ tokens** to finish smoothly without connection aborts.
-
----
-
-## Agentic Tools Compatibility (Cursor, Aider, OpenCode, Roo Code)
-
-| Tool / Workflow | Compatibility | Recommended Configuration |
-| :--- | :---: | :--- |
-| **Aider** (Diff Mode) | **Yes (100%)** | Run with `--model openai/llama-3.3-70b-instruct --edit-format diff` |
-| **Chatbox / LibreChat / NextChat** | **Yes (100%)** | Set `baseURL` to `https://your-deployment.vercel.app/v1` |
-| **Continue.dev** | **Yes (100%)** | Configure for autocomplete and chat sidebars |
-| **Cursor / Roo Code / OpenCode** | ⚠️ **Partial** | Works for direct chat, prompts, and diffs. Autonomous tool execution requiring native OpenAI `tool_calls` requires prompt-based JSON instructions. |
 
 ---
 
@@ -166,20 +127,19 @@ On Vercel Serverless (Hobby plan), functions have a default 15-second execution 
 ```python
 from openai import OpenAI
 
-# Point client to your zerokey deployment
+# Point client to your Cloudflare Worker deployment
 client = OpenAI(
-    base_url="https://your-deployment.vercel.app/v1",
+    base_url="https://zerokey.<your-subdomain>.workers.dev/v1",
     api_key="none"  # Any dummy string works
 )
 
-# Standard completion with auto-continuation enabled
+# Standard completion (default, no continuation)
 response = client.chat.completions.create(
     model="llama-3.3-70b-instruct",
     messages=[
         {"role": "system", "content": "You are an expert TypeScript engineer."},
-        {"role": "user", "content": "Write a complete LRU cache with generics and tests."}
-    ],
-    extra_body={"auto_continue": True}
+        {"role": "user", "content": "Write a complete LRU cache with generics."}
+    ]
 )
 print(response.choices[0].message.content)
 
@@ -201,7 +161,7 @@ print()
 import OpenAI from 'openai';
 
 const openai = new OpenAI({
-    baseURL: 'https://your-deployment.vercel.app/v1',
+    baseURL: 'https://zerokey.<your-subdomain>.workers.dev/v1',
     apiKey: 'none'
 });
 
@@ -218,7 +178,7 @@ console.log(response.choices[0].message.content);
 
 ```bash
 # OpenAI-compatible streaming completion
-curl -N -X POST https://your-deployment.vercel.app/v1/chat/completions \
+curl -N -X POST https://zerokey.<your-subdomain>.workers.dev/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "gpt-4o-mini",
@@ -226,8 +186,17 @@ curl -N -X POST https://your-deployment.vercel.app/v1/chat/completions \
     "stream": true
   }'
 
+# With opt-in auto-continuation
+curl -N -X POST "https://zerokey.<your-subdomain>.workers.dev/v1/chat/completions?ac=1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-4o-mini",
+    "messages": [{"role": "user", "content": "Write a long essay on space exploration."}],
+    "stream": true
+  }'
+
 # Query live model catalog
-curl -s https://your-deployment.vercel.app/v1/models
+curl -s https://zerokey.<your-subdomain>.workers.dev/v1/models
 ```
 
 ---
@@ -236,7 +205,7 @@ curl -s https://your-deployment.vercel.app/v1/models
 
 ### 1. OpenAI-Compatible Route: `POST /v1/chat/completions`
 
-#### Request Body Schema
+#### Request Body Schema (100% Standard OpenAI)
 ```json
 {
   "model": "llama-3.3-70b-instruct",
@@ -244,16 +213,14 @@ curl -s https://your-deployment.vercel.app/v1/models
     { "role": "system", "content": "You are a concise assistant." },
     { "role": "user", "content": "Explain quantum superposition." }
   ],
-  "stream": false,
-  "auto_continue": true,
-  "max_continuations": 1
+  "stream": false
 }
 ```
 * `model` *(string, optional)*: Model identifier. Defaults to DeepAI's default model.
 * `messages` *(array, required)*: List of `{ role, content }` objects. Roles supported: `system`, `developer`, `user`, `assistant`.
 * `stream` *(boolean, optional, default: `false`)*: Enables Server-Sent Events (SSE).
-* `auto_continue` *(boolean, optional, default: `true`)*: Auto-detects cutoffs and continues generation.
-* `max_continuations` *(number, optional, default: `1`, max: `2`)*: Maximum automatic continuation loops.
+
+*Opt-in continuation*: Pass `?ac=1` in query or `X-Auto-Continue: 1` in header.
 
 ---
 
@@ -279,29 +246,41 @@ Returns all live, scraped models in OpenAI's standard schema:
 
 Compact, lightweight endpoints without OpenAI wrappers:
 ```bash
-curl -X POST https://your-deployment.vercel.app/deepai \
+curl -X POST https://zerokey.<your-subdomain>.workers.dev/deepai \
   -H "Content-Type: application/json" \
   -d '{"prompt": "Define recursion.", "model": "standard"}'
 ```
 
 ---
 
-## Local Development & Testing
+## Local Development & Deployment
 
+### Run Locally with Wrangler
 ```bash
 # Install dependencies
 bun install
 
-# Run the test suite (61 tests covering live scrapers, continuation, and E2E endpoints)
+# Run local Cloudflare Worker development server
+bun run dev
+# or
+bunx wrangler dev
+```
+
+### Run Tests
+```bash
+# Run the test suite (63 tests covering live scrapers, continuation, and Cloudflare Worker fetch)
 bun test
 
 # Type check
 bun run typecheck
+```
 
-# Start local server without cloud linking
-vercel dev --local
+### Deploy to Cloudflare Workers
+```bash
+# Deploy instantly to your Cloudflare account (Free Plan)
+bun run deploy
 # or
-bun x vercel dev --local
+bunx wrangler deploy
 ```
 
 ---

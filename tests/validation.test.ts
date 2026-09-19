@@ -1,57 +1,50 @@
 import { describe, it, expect } from 'bun:test';
-import { parseAndValidateRequest, resolveHttpStatus } from '../lib/http';
-import type { VercelRequest } from '@vercel/node';
+import { parseAndValidateRequest, resolveHttpStatus } from '../src/lib/http';
 
-function createMockReq(overrides: Partial<any> = {}): VercelRequest {
-    return {
-        method: 'POST',
-        headers: {},
-        query: {},
-        body: {},
-        ...overrides
-    } as unknown as VercelRequest;
-}
-
-describe('Request Validation (lib/http.ts)', () => {
+describe('Request Validation (src/lib/http.ts)', () => {
     describe('HTTP Method Check', () => {
-        it('should allow GET and POST methods', () => {
-            const getReq = createMockReq({ method: 'GET', query: { prompt: 'hello' } });
-            const postReq = createMockReq({ method: 'POST', body: { prompt: 'hello' } });
+        it('should allow GET and POST methods', async () => {
+            const getReq = new Request('http://localhost/gemini?prompt=hello', { method: 'GET' });
+            const postReq = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: 'hello' })
+            });
 
-            expect(parseAndValidateRequest(getReq).error).toBeUndefined();
-            expect(parseAndValidateRequest(postReq).error).toBeUndefined();
+            expect((await parseAndValidateRequest(getReq)).error).toBeUndefined();
+            expect((await parseAndValidateRequest(postReq)).error).toBeUndefined();
         });
 
-        it('should return 405 for disallowed HTTP methods', () => {
-            const deleteReq = createMockReq({ method: 'DELETE' });
-            const putReq = createMockReq({ method: 'PUT' });
+        it('should return 405 for disallowed HTTP methods', async () => {
+            const delReq = new Request('http://localhost/gemini', { method: 'DELETE' });
+            const putReq = new Request('http://localhost/gemini', { method: 'PUT' });
 
-            const delRes = parseAndValidateRequest(deleteReq);
+            const delRes = await parseAndValidateRequest(delReq);
             expect(delRes.error?.status).toBe(405);
             expect(delRes.error?.error).toContain('Method DELETE not allowed');
 
-            const putRes = parseAndValidateRequest(putReq);
+            const putRes = await parseAndValidateRequest(putReq);
             expect(putRes.error?.status).toBe(405);
             expect(putRes.error?.error).toContain('Method PUT not allowed');
         });
     });
 
     describe('Model Catalog Discovery on GET', () => {
-        it('should detect model query when ?models=true is present', () => {
-            const req = createMockReq({ method: 'GET', query: { models: 'true' } });
-            const res = parseAndValidateRequest(req);
+        it('should detect model query when ?models=true is present', async () => {
+            const req = new Request('http://localhost/gemini?models=true', { method: 'GET' });
+            const res = await parseAndValidateRequest(req);
             expect(res.isModelQuery).toBe(true);
         });
 
-        it('should detect model query on GET when prompt is missing', () => {
-            const req = createMockReq({ method: 'GET', query: {} });
-            const res = parseAndValidateRequest(req);
+        it('should detect model query on GET when prompt is missing', async () => {
+            const req = new Request('http://localhost/gemini', { method: 'GET' });
+            const res = await parseAndValidateRequest(req);
             expect(res.isModelQuery).toBe(true);
         });
 
-        it('should parse chat request on GET when prompt is provided', () => {
-            const req = createMockReq({ method: 'GET', query: { prompt: 'What is 2+2?', stream: 'true' } });
-            const res = parseAndValidateRequest(req);
+        it('should parse chat request on GET when prompt is provided', async () => {
+            const req = new Request('http://localhost/gemini?prompt=What+is+2%2B2%3F&stream=true', { method: 'GET' });
+            const res = await parseAndValidateRequest(req);
             expect(res.isModelQuery).toBeUndefined();
             expect(res.data?.prompt).toBe('What is 2+2?');
             expect(res.data?.stream).toBe(true);
@@ -59,88 +52,141 @@ describe('Request Validation (lib/http.ts)', () => {
     });
 
     describe('JSON Payload & Body Validation (POST)', () => {
-        it('should return 400 when body is invalid JSON string', () => {
-            const req = createMockReq({ method: 'POST', body: '{malformed json' });
-            const res = parseAndValidateRequest(req);
+        it('should return 400 when body is invalid JSON string', async () => {
+            const req = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: '{malformed json'
+            });
+            const res = await parseAndValidateRequest(req);
             expect(res.error?.status).toBe(400);
             expect(res.error?.error).toBe('Invalid JSON payload in request body.');
         });
 
-        it('should return 400 when body is an array or primitive', () => {
-            const reqArray = createMockReq({ method: 'POST', body: ['hello'] });
-            const resArray = parseAndValidateRequest(reqArray);
+        it('should return 400 when body is an array or primitive', async () => {
+            const reqArray = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(['hello'])
+            });
+            const resArray = await parseAndValidateRequest(reqArray);
             expect(resArray.error?.status).toBe(400);
             expect(resArray.error?.error).toBe('Request body must be a valid JSON object.');
 
-            const reqNull = createMockReq({ method: 'POST', body: null });
-            const resNull = parseAndValidateRequest(reqNull);
+            const reqNull = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(null)
+            });
+            const resNull = await parseAndValidateRequest(reqNull);
             expect(resNull.error?.status).toBe(400);
         });
 
-        it('should return 400 when both prompt and messages are missing', () => {
-            const req = createMockReq({ method: 'POST', body: {} });
-            const res = parseAndValidateRequest(req);
+        it('should return 400 when both prompt and messages are missing', async () => {
+            const req = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const res = await parseAndValidateRequest(req);
             expect(res.error?.status).toBe(400);
             expect(res.error?.error).toBe("Missing required 'prompt' or 'messages' in request.");
         });
     });
 
     describe('Field Type & Value Validation', () => {
-        it('should reject non-string prompt', () => {
-            const req = createMockReq({ method: 'POST', body: { prompt: 12345 } });
-            const res = parseAndValidateRequest(req);
+        it('should reject non-string prompt', async () => {
+            const req = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: 12345 })
+            });
+            const res = await parseAndValidateRequest(req);
             expect(res.error?.status).toBe(400);
             expect(res.error?.error).toBe("Field 'prompt' must be a string.");
         });
 
-        it('should reject empty or whitespace-only prompt', () => {
-            const reqEmpty = createMockReq({ method: 'POST', body: { prompt: '' } });
-            expect(parseAndValidateRequest(reqEmpty).error?.error).toBe("Field 'prompt' cannot be empty.");
+        it('should reject empty or whitespace-only prompt', async () => {
+            const reqEmpty = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: '' })
+            });
+            expect((await parseAndValidateRequest(reqEmpty)).error?.error).toBe("Field 'prompt' cannot be empty.");
 
-            const reqSpaces = createMockReq({ method: 'POST', body: { prompt: '    \n  ' } });
-            expect(parseAndValidateRequest(reqSpaces).error?.error).toBe("Field 'prompt' cannot be empty.");
+            const reqSpaces = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: '    \n  ' })
+            });
+            expect((await parseAndValidateRequest(reqSpaces)).error?.error).toBe("Field 'prompt' cannot be empty.");
         });
 
-        it('should reject non-boolean stream', () => {
-            const req = createMockReq({ method: 'POST', body: { prompt: 'hi', stream: 'true' } });
-            const res = parseAndValidateRequest(req);
+        it('should reject non-boolean stream', async () => {
+            const req = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: 'hi', stream: 'true' })
+            });
+            const res = await parseAndValidateRequest(req);
             expect(res.error?.status).toBe(400);
             expect(res.error?.error).toBe("Field 'stream' must be a boolean (true or false).");
         });
 
-        it('should reject empty model or non-string model', () => {
-            const reqNum = createMockReq({ method: 'POST', body: { prompt: 'hi', model: 123 } });
-            expect(parseAndValidateRequest(reqNum).error?.error).toBe("Field 'model' must be a string.");
+        it('should reject empty model or non-string model', async () => {
+            const reqNum = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: 'hi', model: 123 })
+            });
+            expect((await parseAndValidateRequest(reqNum)).error?.error).toBe("Field 'model' must be a string.");
 
-            const reqEmpty = createMockReq({ method: 'POST', body: { prompt: 'hi', model: '   ' } });
-            expect(parseAndValidateRequest(reqEmpty).error?.error).toBe("Field 'model' cannot be empty.");
+            const reqEmpty = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt: 'hi', model: '   ' })
+            });
+            expect((await parseAndValidateRequest(reqEmpty)).error?.error).toBe("Field 'model' cannot be empty.");
         });
 
-        it('should correctly extract messages array', () => {
-            const req = createMockReq({
+        it('should correctly extract messages array', async () => {
+            const req = new Request('http://localhost/gemini', {
                 method: 'POST',
-                body: {
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
                     messages: [
                         { role: 'system', content: 'You are helpful.' },
                         { role: 'user', content: 'What is gravity?' }
                     ]
-                }
+                })
             });
-            const res = parseAndValidateRequest(req);
+            const res = await parseAndValidateRequest(req);
             expect(res.error).toBeUndefined();
             expect(res.data?.prompt).toContain('Instructions: You are helpful.');
             expect(res.data?.prompt).toContain('User: What is gravity?');
         });
 
-        it('should reject invalid messages format', () => {
-            const reqNotArr = createMockReq({ method: 'POST', body: { messages: 'not an array' } });
-            expect(parseAndValidateRequest(reqNotArr).error?.error).toBe("Field 'messages' must be a non-empty array.");
+        it('should reject invalid messages format', async () => {
+            const reqNotArr = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: 'not an array' })
+            });
+            expect((await parseAndValidateRequest(reqNotArr)).error?.error).toBe("Field 'messages' must be a non-empty array.");
 
-            const reqEmptyArr = createMockReq({ method: 'POST', body: { messages: [] } });
-            expect(parseAndValidateRequest(reqEmptyArr).error?.error).toBe("Field 'messages' must be a non-empty array.");
+            const reqEmptyArr = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: [] })
+            });
+            expect((await parseAndValidateRequest(reqEmptyArr)).error?.error).toBe("Field 'messages' must be a non-empty array.");
 
-            const reqBadItem = createMockReq({ method: 'POST', body: { messages: [{ role: 'user' }] } });
-            expect(parseAndValidateRequest(reqBadItem).error?.error).toContain("must be an object with string 'content'");
+            const reqBadItem = new Request('http://localhost/gemini', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ messages: [{ role: 'user' }] })
+            });
+            expect((await parseAndValidateRequest(reqBadItem)).error?.error).toContain("must be an object with string 'content'");
         });
     });
 

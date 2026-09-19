@@ -4,7 +4,7 @@ import {
     fetchDeepAiModels,
     getDefaultDeepAiModel,
     askDeepAi
-} from '../lib/providers/deepai';
+} from '../src/lib/providers/deepai';
 
 describe('DeepAI Provider (lib/providers/deepai.ts)', () => {
     describe('generateIslandKey', () => {

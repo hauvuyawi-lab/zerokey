@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { resolveProvider, normalizeMessages, extractPrompt } from '../lib/providers/router';
+import { resolveProvider, normalizeMessages, extractPrompt } from '../src/lib/providers/router';
 
 describe('Router Logic (lib/providers/router.ts)', () => {
     describe('resolveProvider', () => {
