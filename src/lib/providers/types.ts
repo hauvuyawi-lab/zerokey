@@ -29,30 +29,8 @@ export interface AskGeminiOptions {
     raw?: boolean;
 }
 
-export interface DeepAiModelInfo {
-    id: string;
-    name: string;
-    provider: string;
-    locked?: boolean;
-    description?: string;
-}
-
 export interface FetchModelsOptions {
     timeoutMs?: number;
-    userAgent?: string;
-}
-
-export interface DeepAiModelsResponse {
-    source: 'scrape';
-    count: number;
-    models: DeepAiModelInfo[];
-}
-
-export type DeepAiModelId = string;
-
-export interface AskDeepAiOptions {
-    model?: DeepAiModelId;
-    onChunk?: ((token: string) => void) | null;
     userAgent?: string;
 }
 

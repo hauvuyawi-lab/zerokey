@@ -49,7 +49,7 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: 'standard',
+                model: 'gemini',
                 messages: [{ role: 'user', content: 'Say "Cloudflare Worker Test Passed" and nothing else.' }],
                 stream: false
             })
@@ -69,7 +69,7 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: 'standard',
+                model: 'gemini',
                 messages: [{ role: 'user', content: 'Count from 1 to 3.' }],
                 stream: true
             })
@@ -105,7 +105,7 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: 'standard',
+                model: 'gemini',
                 messages: [{ role: 'user', content: 'Say "Continuation enabled test ok."' }],
                 stream: false
             })
@@ -126,7 +126,7 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
                 'x-auto-continue': '1'
             },
             body: JSON.stringify({
-                model: 'standard',
+                model: 'gemini',
                 messages: [{ role: 'user', content: 'Say "Standard test ok."' }],
                 auto_continue: true,
                 stream: false
@@ -266,7 +266,7 @@ describe('E2E /v1/chat/completions Handler (Cloudflare Worker)', () => {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: 'standard',
+                model: 'gemini',
                 messages: [
                     {
                         role: 'user',

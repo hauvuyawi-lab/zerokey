@@ -8,15 +8,15 @@ import {
 import { fetchDuckAiModels } from '../src/lib/providers/duckai';
 
 describe('Router Logic (lib/providers/router.ts)', () => {
-    describe('resolveProvider - 3-Tier Priority (Gemini -> DuckAI -> DeepAI)', () => {
-        it('should route gemini aliases to the gemini provider (Priority 1)', async () => {
+    describe('resolveProvider - Direct Provider Routing (Gemini & DuckAI)', () => {
+        it('should route gemini aliases to the gemini provider', async () => {
             expect(await resolveProvider('gemini')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
             expect(await resolveProvider('GEMINI')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
             expect(await resolveProvider('gemini-pro')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
             expect(await resolveProvider('google')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
         });
 
-        it('should dynamically route live free DuckAI models to duckai provider (Priority 2)', async () => {
+        it('should dynamically route live free DuckAI models to duckai provider', async () => {
             const duckCatalog = await fetchDuckAiModels();
             expect(duckCatalog.models.length).toBeGreaterThan(0);
 
@@ -34,36 +34,16 @@ describe('Router Logic (lib/providers/router.ts)', () => {
             });
         });
 
-        it('should strip deepai/ prefix and route to deepai provider', async () => {
-            expect(await resolveProvider('deepai/standard')).toEqual({
-                provider: 'deepai',
-                targetModel: 'standard'
-            });
-        });
-
-        it('should route remaining models to deepai as fallback (Priority 3)', async () => {
-            expect(await resolveProvider('standard')).toEqual({
-                provider: 'deepai',
-                targetModel: 'standard'
-            });
-            expect(await resolveProvider('llama-3.3-70b-instruct')).toEqual({
-                provider: 'deepai',
-                targetModel: 'llama-3.3-70b-instruct'
-            });
-            expect(await resolveProvider('deepseek-v3')).toEqual({
-                provider: 'deepai',
-                targetModel: 'deepseek-v3'
-            });
-        });
-
-        it('should fallback to deepai provider when no model is specified', async () => {
-            expect(await resolveProvider()).toEqual({ provider: 'deepai' });
-            expect(await resolveProvider(undefined)).toEqual({ provider: 'deepai' });
+        it('should fallback to gemini provider when no model is specified or unrecognized', async () => {
+            expect(await resolveProvider()).toEqual({ provider: 'gemini', targetModel: 'gemini' });
+            expect(await resolveProvider(undefined)).toEqual({ provider: 'gemini', targetModel: 'gemini' });
+            expect(await resolveProvider('')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
+            expect(await resolveProvider('unknown-model-xyz')).toEqual({ provider: 'gemini', targetModel: 'gemini' });
         });
     });
 
     describe('getUnifiedOpenAIModels catalog deduplication', () => {
-        it('should aggregate models across Gemini, DuckAI, and DeepAI with zero duplicates', async () => {
+        it('should aggregate models across Gemini and DuckAI with zero duplicates', async () => {
             const result = await getUnifiedOpenAIModels();
             expect(result).toBeDefined();
             expect(result.object).toBe('list');

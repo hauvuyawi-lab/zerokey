@@ -1,7 +1,7 @@
 /**
  * src/index.ts - Zerokey Cloudflare Worker Entry Point.
  * High-performance, edge-native, multi-model AI gateway with Web Standards.
- * Providers: Google Gemini -> DuckAI -> DeepAI.
+ * Providers: Google Gemini -> DuckAI.
  */
 
 import {
@@ -20,7 +20,6 @@ import {
 } from './lib/providers/router';
 import { askGemini, getGeminiModels } from './lib/providers/gemini';
 import { askDuckAi, fetchDuckAiModels } from './lib/providers/duckai';
-import { askDeepAi, fetchDeepAiModels } from './lib/providers/deepai';
 import { isTruncated, deduplicateSeam, buildContinuationMessages } from './lib/continuation';
 import type {
     ChatCompletionRequest,
@@ -59,8 +58,7 @@ export default {
                         models: '/v1/models',
                         completions: '/v1/chat/completions',
                         gemini: '/gemini',
-                        duckai: '/duckai',
-                        deepai: '/deepai'
+                        duckai: '/duckai'
                     }
                 });
             }
@@ -97,11 +95,6 @@ export default {
             // 7. /duckai
             if (path === '/duckai') {
                 return handleDuckAiEndpoint(request, env);
-            }
-
-            // 8. /deepai
-            if (path === '/deepai') {
-                return handleDeepAiEndpoint(request);
             }
 
             return jsonError(404, `Route ${path} not found.`, 'not_found');
@@ -416,29 +409,6 @@ async function handleDuckAiEndpoint(request: Request, env?: Env): Promise<Respon
     }
 
     const result = await askDuckAi(prompt, { model }, env);
-    return jsonResponse(result);
-}
-
-/**
- * Handles standalone /deepai endpoint.
- */
-async function handleDeepAiEndpoint(request: Request): Promise<Response> {
-    const parseResult = await parseAndValidateRequest(request);
-    if (parseResult.error) {
-        return jsonError(parseResult.error.status, parseResult.error.error);
-    }
-
-    if (parseResult.isModelQuery) {
-        const models = (await fetchDeepAiModels()).models;
-        return jsonResponse({ provider: 'deepai', models });
-    }
-
-    const { prompt, model, stream } = parseResult.data!;
-    if (stream) {
-        return streamSinglePrompt(prompt, (p, onChunk) => askDeepAi(p, { model, onChunk }));
-    }
-
-    const result = await askDeepAi(prompt, { model });
     return jsonResponse(result);
 }
 

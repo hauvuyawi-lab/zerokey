@@ -1,6 +1,6 @@
 # zerokey
 
-An OpenAI-compatible API gateway that wraps public web chat services (**Google Gemini**, **DuckAI**, and **DeepAI**) into a unified `/v1/chat/completions` and `/v1/models` interface. No API keys, accounts, or payment credentials required.
+An OpenAI-compatible API gateway that wraps public web chat services (**Google Gemini** and **DuckAI**) into a unified `/v1/chat/completions` and `/v1/models` interface. No API keys, accounts, or payment credentials required.
 
 Works as a drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, Chatbox, Cursor, Continue.dev, Aider, or any tool that supports a custom `baseURL`.
 
@@ -9,16 +9,15 @@ Works as a drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, 
 ## How It Works
 
 - **Unified OpenAI Interface**: Accepts standard `messages` arrays at `POST /v1/chat/completions` and returns standard OpenAI JSON or SSE chunks.
-- **3-Tier Routing Hierarchy**: Automatically resolves models by priority: **Gemini -> DuckAI -> DeepAI**.
-  - Requests for Google models (e.g. `gemini`) route to Gemini.
-  - Requests matching DuckAI's free catalog route to DuckAI.
-  - Remaining models fall back to DeepAI.
-  - Specific providers can be forced using prefixes (e.g. `duckai/<model>` or `deepai/<model>`).
-- **Dynamic Model Discovery**: Zero hardcoded model lists. `/v1/models` dynamically queries upstream provider manifests for currently unlocked, free-tier models and deduplicates them so higher-priority providers take precedence.
-- **Active System Anchoring (100% Persona Retention)**: Fixes upstream web amnesia (especially DeepAI, which silently discards `{ role: "system" }`). Roleplay and system instructions are dynamically anchored directly into the active user turn, ensuring 100% character and persona retention across multi-turn chats.
+- **Direct Multi-Model Routing**: Automatically routes between **Google Gemini** (default keyless engine) and **DuckAI** (Claude 3.5 Haiku, GPT-4o mini, Mistral, Llama 3.3 70B).
+  - Unspecified or unknown models default directly to **Gemini**.
+  - Requests matching DuckAI's free catalog route to **DuckAI**.
+  - Specific providers can be explicitly targeted using prefixes (e.g. `duckai/<model>`).
+- **100% Cloudflare Worker Native**: Completely self-contained with zero external proxies or third-party serverless dependencies needed.
+- **Dynamic Model Discovery**: Zero hardcoded model lists. `/v1/models` dynamically discovers live free-tier models from upstream providers with zero duplicate entries.
+- **Active System Anchoring (100% Persona Retention)**: System instructions and personas are dynamically anchored directly into active user turns, ensuring 100% character retention across multi-turn chats with zero context amnesia.
 - **Real-Time Streaming**: Supports Server-Sent Events (`stream: true`) using standard Web Streams with zero token latency.
-- **Vercel Edge Proxy Pool (`PROXY_URLS`)**: Transparently distributes outbound requests across global Vercel Anycast edge IPs (AWS IP pool) to bypass upstream IP rate limits (HTTP 429) and multiply anonymous usage quotas.
-- **Auto-Continuation (`?ac=1`)**: Upstream web interfaces often enforce token limits per turn (~2,500–4,000 tokens). When enabled via query parameter, the proxy detects if output was cut off mid-code or mid-sentence, automatically requests continuation, deduplicates the seam, and emits a single uninterrupted stream.
+- **Auto-Continuation (`?ac=1`)**: Upstream web interfaces often enforce token limits per turn (~2,500–4,000 tokens). When enabled via query parameter, ZeroKey detects if output was cut off mid-code or mid-sentence, automatically requests continuation, deduplicates the seam, and emits a single uninterrupted stream.
 - **Automated DuckAI Token Sync**: DuckAI requires an active anti-bot challenge pass (`X-Vqd-Hash-1`). Zerokey includes a headless browser harvester (`scripts/harvest.js`) and GitHub Action (`.github/workflows/harvest.yml`) to keep the token fresh in storage without redeploying code.
 
 ---
@@ -45,47 +44,12 @@ Works as a drop-in replacement with standard OpenAI SDKs, LangChain, LibreChat, 
 1. **Input Context Limits**: Upstream web interfaces truncate prompts beyond ~4,000–8,000 tokens. It is not suitable for feeding entire repositories or large document dumps into a single prompt.
 2. **Text-Only Modality**: Upstream free anonymous endpoints are purely text-based. While ZeroKey safely accepts standard OpenAI multimodal payloads (images, audio clips, file attachments) without crashing or throwing JSON errors, it extracts all prompt text and appends contextual tags (e.g. `[Attached Image]`) while stripping heavy binary tensors. Models cannot visually inspect images or listen to audio recordings.
 3. **No Native Tool Calling AST**: Models do not support the structured `tool_calls` JSON schema parameter natively. If you need JSON outputs or function calls, instruct the model in your prompt to respond strictly in JSON.
-4. **Upstream Challenges & Rate Limits**: Upstream web endpoints utilize anti-bot mitigations. While DeepAI and Gemini handle standard usage without sessions, DuckAI requires an active VQD token (maintained by the automated harvester). Using the optional Vercel Edge proxy pool distributes IP load and prevents rate limits.
-5. **No Uptime SLA**: This project reverse-engineers public web endpoints. If Google, DuckAI, or DeepAI changes their frontend scripts, hashing logic, or internal payload structures, endpoints may break until adaptors are updated.
+4. **Upstream Challenges**: Upstream web endpoints utilize anti-bot mitigations. Gemini handles usage directly with zero sessions or tokens, while DuckAI requires an active VQD token (maintained automatically by the headless harvester).
+5. **No Uptime SLA**: This project reverse-engineers public web endpoints. If Google or DuckDuckGo changes their frontend scripts or payload structures, endpoints may break until adaptors are updated.
 
 ---
 
-## Scaling with Vercel Edge Proxy Pool (`zerokey-proxy`)
 
-By default, ZeroKey connects directly to upstream providers. However, all Cloudflare Workers share Cloudflare's datacenter IP range (`AS13335`), which can trigger upstream IP rate limits (HTTP 429) or anonymous usage blocks on DeepAI.
-
-You can deploy the standalone **[`zerokey-proxy`](https://github.com/hauvuyawi-lab/zerokey-proxy)** edge function to Vercel (free) to route traffic through Vercel's global Anycast Edge IP addresses:
-
-```
-[Client] ──► [ZeroKey (Cloudflare Worker)]
-                  │ (Rotates across PROXY_URLS)
-                  ├──► (Direct fetch) ───────► [Gemini & DuckAI]
-                  │
-                  └──► (Rotates PROXY_URLS) ──► [Vercel Edge Proxy Pool] ──► [DeepAI]
-```
-
-### Configuring `PROXY_URLS` in Worker Environment
-
-Do **not** commit proxy URLs into `wrangler.toml`. Set `PROXY_URLS` directly as an environment variable in Cloudflare:
-
-#### Method 1: Cloudflare Dashboard
-1. Go to **Workers & Pages** -> select your **zerokey** worker.
-2. Navigate to **Settings** -> **Variables and Secrets**.
-3. Under **Environment Variables**, add:
-   - **Variable name**: `PROXY_URLS`
-   - **Value**: `https://zerokey-proxy-1.vercel.app/proxy, https://zerokey-proxy-2.vercel.app/proxy`
-4. Click **Deploy**.
-
-#### Method 2: Wrangler CLI
-```bash
-# Set as encrypted Worker secret:
-npx wrangler secret put PROXY_URLS
-# Paste your comma-separated list of proxy endpoints
-```
-
-ZeroKey routes DeepAI requests through your Vercel proxy pool for IP rotation, while Gemini and DuckAI connect directly from Cloudflare (where Google and DuckDuckGo operate reliably without datacenter blocks). If any proxy endpoint fails or times out, ZeroKey automatically falls back to direct fetch.
-
----
 
 ## API Reference
 
@@ -127,7 +91,6 @@ Returns the live, dynamically discovered, and deduplicated catalog across all pr
 Lightweight endpoints without OpenAI wrappers:
 - `POST /gemini` — `{"prompt": "Hello"}`
 - `POST /duckai` — `{"prompt": "Hello", "model": "<model_id>"}`
-- `POST /deepai` — `{"prompt": "Hello", "model": "<model_id>"}`
 
 ### 4. DuckAI Token Management: `/duckai/token`
 
@@ -205,8 +168,6 @@ for await (const chunk of stream) {
 | Variable | Location | Description |
 | :--- | :--- | :--- |
 | `ADMIN_KEY` | Worker Secret & GitHub Secret | Secret password protecting `POST /duckai/token`. |
-| `PROXY_URLS` | Worker Environment Variable / Secret | Comma-separated list of Vercel Edge proxy endpoints (e.g. `https://proxy1.vercel.app/proxy, https://proxy2.vercel.app/proxy`). |
-| `PROXY_KEY` | Worker Secret (Optional) | Shared secret passed in `X-Proxy-Key` header if your proxy instances require authentication. |
 | `WORKER_URL` | GitHub Repository Variable | Target URL (e.g. `https://<subdomain>.workers.dev`) used by the harvester. |
 | `ZEROKEY_KV` | Cloudflare KV Binding | Cloudflare KV namespace binding for storing the active DuckAI session token. |
 | `DUCKAI_VQD` | Environment Variable (Optional) | Static fallback DuckAI token if KV is not bound. |
@@ -236,7 +197,7 @@ DuckAI uses anti-bot challenge passes (`x-vqd-hash-1`) that expire periodically.
 # Install dependencies
 bun install
 
-# Run full test suite (93 tests covering scrapers, proxy pool, router, and worker)
+# Run full test suite (77 tests covering scrapers, router, and worker)
 bun test
 
 # Type check
@@ -253,4 +214,4 @@ bun run deploy
 
 ## Disclaimer
 
-This project reverse-engineers public web chat interfaces for personal experimentation, research, and hobby use. It is not affiliated with, endorsed by, or connected to Google, DuckDuckGo, or DeepAI. Automated use of web interfaces may violate third-party Terms of Service. Do not use this service to process sensitive, personal, or confidential information.
+This project reverse-engineers public web chat interfaces for personal experimentation, research, and hobby use. It is not affiliated with, endorsed by, or connected to Google or DuckDuckGo. Automated use of web interfaces may violate third-party Terms of Service. Do not use this service to process sensitive, personal, or confidential information.

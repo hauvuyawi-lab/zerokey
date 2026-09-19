@@ -1,11 +1,10 @@
 /**
  * src/lib/providers/router.ts - Unified provider routing and catalog aggregation.
- * Enforces strict 3-tier priority: Gemini -> DuckAI -> DeepAI with catalog deduplication.
+ * Routes between Google Gemini and DuckAI with dynamic discovery.
  */
 
 import { askGemini, getGeminiModels } from './gemini';
 import { askDuckAi, fetchDuckAiModels, resolveDuckAiModel } from './duckai';
-import { askDeepAi, fetchDeepAiModels } from './deepai';
 import {
     extractContentText,
     type ChatMessage,
@@ -79,34 +78,31 @@ export function extractPrompt(request: { prompt?: string; messages?: ChatMessage
 
 /**
  * Determines which provider handles the requested model.
- * Strict priority order: Gemini -> DuckAI -> DeepAI.
- * Completely dynamic: matches against live accessible free models without hardcoding model names.
+ * Direct routing between Google Gemini and DuckAI.
+ * Defaults to Google Gemini when no model is specified or unrecognized.
  */
 export async function resolveProvider(modelName?: string): Promise<{
-    provider: 'gemini' | 'duckai' | 'deepai';
+    provider: 'gemini' | 'duckai';
     targetModel?: string;
 }> {
-    if (!modelName) {
-        return { provider: 'deepai' };
+    if (!modelName || !modelName.trim()) {
+        return { provider: 'gemini', targetModel: 'gemini' };
     }
 
     const clean = modelName.trim();
     const lower = clean.toLowerCase();
 
-    // 1. Priority 1: Gemini
+    // 1. Google Gemini
     if (lower === 'gemini' || lower.startsWith('gemini-') || lower === 'google') {
         return { provider: 'gemini', targetModel: 'gemini' };
     }
 
-    // Explicit provider prefixes
+    // Explicit duckai/ prefix
     if (lower.startsWith('duckai/')) {
         return { provider: 'duckai', targetModel: clean.slice(7) };
     }
-    if (lower.startsWith('deepai/')) {
-        return { provider: 'deepai', targetModel: clean.slice(7) };
-    }
 
-    // 2. Priority 2: DuckAI (Dynamic check against live free accessible models)
+    // 2. DuckAI (Dynamic check against live free accessible models)
     try {
         const duckData = await fetchDuckAiModels();
         const found = duckData.models.find(m => {
@@ -130,12 +126,12 @@ export async function resolveProvider(modelName?: string): Promise<{
         }
     } catch {}
 
-    // 3. Priority 3: DeepAI fallback
-    return { provider: 'deepai', targetModel: clean };
+    // Fallback: Default to Gemini
+    return { provider: 'gemini', targetModel: 'gemini' };
 }
 
 /**
- * Unified execution router: routes prompt/messages to Gemini, DuckAI, or DeepAI.
+ * Unified execution router: routes prompt/messages to Gemini or DuckAI.
  */
 export async function unifiedExecute(params: {
     model?: string;
@@ -157,38 +153,35 @@ export async function unifiedExecute(params: {
         try {
             return await askDuckAi(query, { model: targetModel, onChunk }, env);
         } catch (err: any) {
-            // Transparent failover: on DuckAI 418 (token expired) or 429 (rate limit), failover to DeepAI
+            // Transparent failover: on DuckAI 418 (token expired) or 429 (rate limit), failover to Gemini
             const msg = String(err?.message || err);
             if (msg.includes('418') || msg.includes('429') || msg.includes('site pass missing')) {
-                return await askDeepAi(query, { model: targetModel, onChunk }, env);
+                return await askGemini(prompt, { onChunk }, env);
             }
             throw err;
         }
     }
 
-    return askDeepAi(query, { model: targetModel, onChunk }, env);
+    return askGemini(prompt, { onChunk }, env);
 }
 
 /**
  * Aggregates available models across providers into standard OpenAI model schema.
- * Enforces strict priority deduplication: Gemini -> DuckAI -> DeepAI.
- * DeepAI models only list what is MISSING from Gemini and DuckAI combined.
+ * Aggregates Google Gemini and DuckAI with zero duplicates.
  */
 export async function getUnifiedOpenAIModels(): Promise<OpenAIModelListResponse> {
     const models: OpenAIModelItem[] = [];
     const seenIds = new Set<string>();
 
-    // Helper to register an ID and common variants in seenIds
     const markSeen = (id: string) => {
         const lower = id.toLowerCase();
         seenIds.add(lower);
-        // Also normalize prefixes (e.g. tinfoil/gpt-oss-120b <-> gpt-oss-120b)
         if (lower.includes('/')) {
             seenIds.add(lower.split('/').pop()!);
         }
     };
 
-    // 1. Priority 1: Google Gemini models
+    // 1. Google Gemini models
     try {
         const geminiModels = await getGeminiModels();
         for (const m of geminiModels) {
@@ -212,33 +205,13 @@ export async function getUnifiedOpenAIModels(): Promise<OpenAIModelListResponse>
         markSeen('gemini');
     }
 
-    // 2. Priority 2: DuckAI models (skips any in Gemini)
+    // 2. DuckAI models
     try {
         const duckData = await fetchDuckAiModels({ timeoutMs: 4000 });
         for (const m of duckData.models) {
             const lower = m.id.toLowerCase();
             const stripped = lower.includes('/') ? lower.split('/').pop()! : lower;
 
-            if (!seenIds.has(lower) && !seenIds.has(stripped)) {
-                markSeen(m.id);
-                models.push({
-                    id: m.id,
-                    object: 'model',
-                    created: 1773800000,
-                    owned_by: m.provider.toLowerCase()
-                });
-            }
-        }
-    } catch {}
-
-    // 3. Priority 3: DeepAI models (ONLY list what is MISSING from Gemini + DuckAI)
-    try {
-        const deepData = await fetchDeepAiModels({ timeoutMs: 4000 });
-        for (const m of deepData.models) {
-            const lower = m.id.toLowerCase();
-            const stripped = lower.includes('/') ? lower.split('/').pop()! : lower;
-
-            // Skip any model that was already provided by Gemini or DuckAI!
             if (!seenIds.has(lower) && !seenIds.has(stripped)) {
                 markSeen(m.id);
                 models.push({

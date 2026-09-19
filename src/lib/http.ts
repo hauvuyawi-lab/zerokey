@@ -127,7 +127,7 @@ export function resolveHttpStatus(error: any): number {
 }
 
 /**
- * Validates incoming GET and POST requests for provider endpoints (/gemini, /deepai).
+ * Validates incoming GET and POST requests for provider endpoints (/gemini, /duckai).
  * Edge-native: reads Web Standard Request.
  */
 export async function parseAndValidateRequest(request: Request): Promise<ParseResult> {
