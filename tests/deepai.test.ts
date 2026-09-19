@@ -80,5 +80,19 @@ describe('DeepAI Provider (lib/providers/deepai.ts)', () => {
             expect(result.response.length).toBeGreaterThan(0);
             expect(chunks.length).toBeGreaterThan(0);
         }, 15000);
+
+        it('should preserve and anchor system instructions across multi-turn messages', async () => {
+            const messages = [
+                { role: 'system', content: 'You are a pirate. Always say "Ahoy" and speak in pirate slang.' },
+                { role: 'user', content: 'Hello' },
+                { role: 'assistant', content: 'Ahoy matey!' },
+                { role: 'user', content: 'What is 1 + 1?' }
+            ];
+            const result = await askDeepAi(messages as any);
+            expect(result.response.length).toBeGreaterThan(0);
+            const lower = result.response.toLowerCase();
+            const hasPirateVoice = lower.includes('ahoy') || lower.includes('matey') || lower.includes('arr') || lower.includes('aye') || lower.includes('landlubber');
+            expect(hasPirateVoice).toBe(true);
+        }, 15000);
     });
 });

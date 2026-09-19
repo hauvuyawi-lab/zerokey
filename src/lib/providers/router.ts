@@ -25,16 +25,37 @@ export function normalizeMessages(messages: ChatMessage[]): string {
         return messages[0].content.trim();
     }
 
-    const parts: string[] = [];
+    const sys: string[] = [];
+    const conversation: Array<{ role: string; content: string }> = [];
+
     for (const msg of messages) {
         if (!msg.content) continue;
         const role = msg.role.toLowerCase();
         if (role === 'system' || role === 'developer') {
-            parts.push(`Instructions: ${msg.content.trim()}`);
-        } else if (role === 'user') {
-            parts.push(`User: ${msg.content.trim()}`);
-        } else if (role === 'assistant') {
-            parts.push(`Assistant: ${msg.content.trim()}`);
+            sys.push(msg.content.trim());
+        } else {
+            conversation.push({ role, content: msg.content.trim() });
+        }
+    }
+
+    const parts: string[] = [];
+    const sysPrefix = sys.join('\n\n');
+    if (sysPrefix) {
+        parts.push(`Instructions: ${sysPrefix}`);
+    }
+
+    for (let i = 0; i < conversation.length; i++) {
+        const item = conversation[i];
+        if (item.role === 'user') {
+            // For multi-turn conversations (>1 turn), reinforce system instruction on active turn
+            const isLastTurn = i === conversation.length - 1;
+            if (isLastTurn && sysPrefix && conversation.length > 1) {
+                parts.push(`User: ${item.content}\n\n[Instructions: ${sysPrefix}]`);
+            } else {
+                parts.push(`User: ${item.content}`);
+            }
+        } else if (item.role === 'assistant') {
+            parts.push(`Assistant: ${item.content}`);
         }
     }
 
@@ -125,16 +146,25 @@ export async function unifiedExecute(params: {
     const { provider, targetModel } = await resolveProvider(model);
 
     if (provider === 'gemini') {
-        return askGemini(prompt, { onChunk });
+        return askGemini(prompt, { onChunk }, env);
     }
 
     const query = messages && messages.length > 0 ? messages : prompt;
 
     if (provider === 'duckai') {
-        return askDuckAi(query, { model: targetModel, onChunk }, env);
+        try {
+            return await askDuckAi(query, { model: targetModel, onChunk }, env);
+        } catch (err: any) {
+            // Transparent failover: on DuckAI 418 (token expired) or 429 (rate limit), failover to DeepAI
+            const msg = String(err?.message || err);
+            if (msg.includes('418') || msg.includes('429') || msg.includes('site pass missing')) {
+                return await askDeepAi(query, { model: targetModel, onChunk }, env);
+            }
+            throw err;
+        }
     }
 
-    return askDeepAi(query, { model: targetModel, onChunk });
+    return askDeepAi(query, { model: targetModel, onChunk }, env);
 }
 
 /**

@@ -11,6 +11,7 @@ import type {
     ProviderResult,
     ChatMessage
 } from './types';
+import { fetchWithProxy } from '../proxy';
 
 const DEFAULT_USER_AGENT =
     'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
@@ -205,6 +206,21 @@ function foldMessages(messages: ChatMessage[]): Array<{ role: 'user' | 'assistan
         rest.unshift({ role: 'user', content: prefix });
     }
 
+    // In multi-turn conversations with >1 user turn, reinforce system instructions on the active turn
+    let lastUserIdx = -1;
+    for (let i = rest.length - 1; i >= 0; i--) {
+        if (rest[i].role === 'user') {
+            lastUserIdx = i;
+            break;
+        }
+    }
+    if (lastUserIdx > firstUserIdx && lastUserIdx >= 0) {
+        rest[lastUserIdx] = {
+            role: 'user',
+            content: `[System Instructions: ${prefix}]\n\n${rest[lastUserIdx].content}`
+        };
+    }
+
     return rest;
 }
 
@@ -293,21 +309,25 @@ export async function askDuckAi(
         durableStream: envelope
     };
 
-    const res = await fetch(DUCK_CHAT_URL, {
-        method: 'POST',
-        headers: {
-            'User-Agent': userAgent,
-            'Accept': 'text/event-stream',
-            'Content-Type': 'application/json',
-            'Origin': DUCK_BASE_URL,
-            'Referer': `${DUCK_BASE_URL}/`,
-            'x-fe-version': DEFAULT_FE_VERSION,
-            'x-fe-signals': btoa('{}'),
-            'X-Vqd-Hash-1': vqdToken.trim(),
-            'x-ddg-journey-id': envelope.conversationId
+    const res = await fetchWithProxy(
+        DUCK_CHAT_URL,
+        {
+            method: 'POST',
+            headers: {
+                'User-Agent': userAgent,
+                'Accept': 'text/event-stream',
+                'Content-Type': 'application/json',
+                'Origin': DUCK_BASE_URL,
+                'Referer': `${DUCK_BASE_URL}/`,
+                'x-fe-version': DEFAULT_FE_VERSION,
+                'x-fe-signals': btoa('{}'),
+                'X-Vqd-Hash-1': vqdToken.trim(),
+                'x-ddg-journey-id': envelope.conversationId
+            },
+            body: JSON.stringify(body)
         },
-        body: JSON.stringify(body)
-    });
+        env
+    );
 
     if (res.status === 418) {
         throw new Error(

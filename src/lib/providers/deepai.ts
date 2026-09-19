@@ -6,6 +6,7 @@ import type {
     ProviderResult,
     ChatMessage
 } from './types';
+import { fetchWithProxy } from '../proxy';
 
 const DEFAULT_USER_AGENT =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -190,23 +191,70 @@ export async function getDefaultDeepAiModel(): Promise<string> {
  */
 export async function askDeepAi(
     promptOrMessages: string | ChatMessage[],
-    options?: AskDeepAiOptions
+    options?: AskDeepAiOptions,
+    env?: any
 ): Promise<ProviderResult> {
     const startTime = Date.now();
     const userAgent = options?.userAgent ?? DEFAULT_USER_AGENT;
     const model = options?.model?.trim() || (await getDefaultDeepAiModel());
 
-    let chatHistory: ChatMessage[];
+    let chatHistory: Array<{ role: 'user' | 'assistant'; content: string }>;
     if (typeof promptOrMessages === 'string') {
         if (!promptOrMessages.trim()) {
             throw new Error('Prompt or messages must be provided');
         }
         chatHistory = [{ role: 'user', content: promptOrMessages.trim() }];
     } else if (Array.isArray(promptOrMessages) && promptOrMessages.length > 0) {
-        chatHistory = promptOrMessages.map(m => ({
-            role: m.role === 'developer' ? 'system' : m.role,
-            content: m.content
-        }));
+        const sysInstructions: string[] = [];
+        const conversation: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+
+        for (const m of promptOrMessages) {
+            if (!m || typeof m !== 'object') continue;
+            const role = (m.role || '').toLowerCase();
+            const content = String(m.content || '').trim();
+            if (!content) continue;
+
+            if (role === 'system' || role === 'developer') {
+                sysInstructions.push(content);
+            } else if (role === 'assistant') {
+                conversation.push({ role: 'assistant', content });
+            } else {
+                conversation.push({ role: 'user', content });
+            }
+        }
+
+        const systemBadge = sysInstructions.join('\n\n');
+
+        if (conversation.length === 0) {
+            if (!systemBadge) {
+                throw new Error('Prompt or messages must be provided');
+            }
+            chatHistory = [{ role: 'user', content: systemBadge }];
+        } else if (!systemBadge) {
+            chatHistory = conversation;
+        } else {
+            // Anchor system instructions into the active (latest) user message
+            let lastUserIdx = -1;
+            for (let i = conversation.length - 1; i >= 0; i--) {
+                if (conversation[i].role === 'user') {
+                    lastUserIdx = i;
+                    break;
+                }
+            }
+
+            if (lastUserIdx >= 0) {
+                conversation[lastUserIdx] = {
+                    role: 'user',
+                    content: `[System Instructions: ${systemBadge}]\n\n${conversation[lastUserIdx].content}`
+                };
+            } else {
+                conversation.unshift({
+                    role: 'user',
+                    content: `[System Instructions: ${systemBadge}]`
+                });
+            }
+            chatHistory = conversation;
+        }
     } else {
         throw new Error('Prompt or messages must be provided');
     }
@@ -226,16 +274,20 @@ export async function askDeepAi(
     formData.append('hacker_is_stinky', 'very_stinky');
     formData.append('enabled_tools', JSON.stringify(['image_generator', 'image_editor']));
 
-    const res = await fetch(DEEPAI_API_CHAT_URL, {
-        method: 'POST',
-        headers: {
-            'api-key': apiKey,
-            'user-agent': userAgent,
-            'origin': 'https://deepai.org',
-            'referer': 'https://deepai.org/chat'
+    const res = await fetchWithProxy(
+        DEEPAI_API_CHAT_URL,
+        {
+            method: 'POST',
+            headers: {
+                'api-key': apiKey,
+                'user-agent': userAgent,
+                'origin': 'https://deepai.org',
+                'referer': 'https://deepai.org/chat'
+            },
+            body: formData
         },
-        body: formData
-    });
+        env
+    );
 
     if (!res.ok) {
         let errBody = '';
